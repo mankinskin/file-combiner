@@ -4,7 +4,7 @@ Standalone Dioxus (frontend) and Axum (backend) application that combines exactl
 
 ## Status
 
-Waypoint 1 (foundation and contract) is implemented: the Cargo workspace, shared v1 contract (capacity limits, JSON error schema), configuration validation, and `GET /healthz`. The authenticated `/api/combine` handler, browser UI, container image, and CI/CD land in later waypoints.
+Waypoints 1-3 are implemented: the Cargo workspace and shared v1 contract, the authenticated `/api/combine` endpoint with bounded in-memory multipart handling, and the Dioxus browser UI (token entry, two ordered file slots, submit, and download) served same-origin by Axum alongside `/healthz`. The container image and CI/CD land in the final waypoint.
 
 ## Runtime configuration
 
@@ -13,6 +13,7 @@ The backend reads these environment variables at startup and refuses to bind if 
 - `COMBINE_BEARER_TOKEN` - shared trusted-group password for browser requests. Not individual user identity.
 - `COMBINE_PROBE_TOKEN` - distinct token accepted only on the internal probe path (CI/CD post-deploy smoke check); never valid for browser-originated requests.
 - `PORT` - TCP port to bind (defaults to `8080` when unset).
+- `STATIC_DIR` - directory containing the built frontend assets served at every path other than `/healthz` and `/api/*` (defaults to `frontend/dist`).
 
 ## Prerequisites
 
@@ -30,4 +31,8 @@ cargo install trunk --version 0.21.14 --locked
 cargo fmt -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test -p backend
+(cd frontend && trunk build --release)
+bash scripts/smoke-browser.sh <disposable-token>
 ```
+
+`scripts/smoke-browser.sh` builds the frontend, starts the backend on an ephemeral token, waits for `/healthz`, then runs the Playwright harness in `frontend/e2e/` against the running instance.

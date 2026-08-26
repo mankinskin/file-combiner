@@ -99,7 +99,7 @@ async fn error_code(response: axum::response::Response) -> String {
 
 #[tokio::test]
 async fn missing_credentials_returns_401() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
         file_part("a", "a.txt", "one"),
         file_part("b", "b.txt", "two"),
@@ -111,7 +111,7 @@ async fn missing_credentials_returns_401() {
 
 #[tokio::test]
 async fn invalid_credentials_returns_401() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
         file_part("a", "a.txt", "one"),
         file_part("b", "b.txt", "two"),
@@ -125,7 +125,7 @@ async fn invalid_credentials_returns_401() {
 
 #[tokio::test]
 async fn probe_token_without_probe_header_returns_401() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
         file_part("a", "a.txt", "one"),
         file_part("b", "b.txt", "two"),
@@ -139,7 +139,7 @@ async fn probe_token_without_probe_header_returns_401() {
 
 #[tokio::test]
 async fn probe_token_with_probe_header_is_authorized() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
         file_part("a", "a.txt", "one"),
         file_part("b", "b.txt", "two"),
@@ -153,7 +153,7 @@ async fn probe_token_with_probe_header_is_authorized() {
 
 #[tokio::test]
 async fn two_valid_files_combine_byte_exact_with_attachment_headers() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
         file_part("first", "first.txt", "hello"),
         file_part("second", "second.txt", "world"),
@@ -177,7 +177,7 @@ async fn two_valid_files_combine_byte_exact_with_attachment_headers() {
 
 #[tokio::test]
 async fn zero_file_parts_returns_wrong_file_count() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[]);
     let response = app
         .oneshot(request(Some(BEARER_TOKEN), false, body))
@@ -189,7 +189,7 @@ async fn zero_file_parts_returns_wrong_file_count() {
 
 #[tokio::test]
 async fn one_file_part_returns_wrong_file_count() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[file_part("a", "a.txt", "one")]);
     let response = app
         .oneshot(request(Some(BEARER_TOKEN), false, body))
@@ -201,7 +201,7 @@ async fn one_file_part_returns_wrong_file_count() {
 
 #[tokio::test]
 async fn three_file_parts_returns_wrong_file_count() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
         file_part("a", "a.txt", "one"),
         file_part("b", "b.txt", "two"),
@@ -217,7 +217,7 @@ async fn three_file_parts_returns_wrong_file_count() {
 
 #[tokio::test]
 async fn non_file_field_is_rejected() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
         field_part("note", "not a file"),
         file_part("a", "a.txt", "one"),
@@ -233,7 +233,7 @@ async fn non_file_field_is_rejected() {
 
 #[tokio::test]
 async fn oversized_file_returns_413_file_too_large() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let oversized = vec![b'a'; backend::contract::MAX_FILE_BYTES as usize + 1];
     let body = build_multipart_body(&[
         file_part("a", "a.txt", oversized),
@@ -249,7 +249,7 @@ async fn oversized_file_returns_413_file_too_large() {
 
 #[tokio::test]
 async fn oversized_request_returns_413_payload_too_large() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
         file_part("a", "a.txt", "one"),
         file_part("b", "b.txt", "two"),
@@ -269,7 +269,7 @@ async fn oversized_request_returns_413_payload_too_large() {
 
 #[tokio::test]
 async fn invalid_utf8_file_is_rejected() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let invalid_utf8 = vec![0xFF, 0xFE, 0xFD];
     let body = build_multipart_body(&[
         file_part("a", "a.txt", invalid_utf8),
@@ -285,7 +285,7 @@ async fn invalid_utf8_file_is_rejected() {
 
 #[tokio::test]
 async fn oversized_metadata_is_rejected() {
-    let app = router(test_state());
+    let app = router(test_state(), "frontend/dist");
     let long_name: String = "n".repeat(backend::contract::MAX_PART_HEADER_BYTES + 1);
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
@@ -313,7 +313,7 @@ async fn fifth_concurrent_request_returns_service_busy() {
         held_permits.push(state.combine_slots().clone().try_acquire_owned().unwrap());
     }
 
-    let app = router(state);
+    let app = router(state, "frontend/dist");
     let body = build_multipart_body(&[
         file_part("a", "a.txt", "one"),
         file_part("b", "b.txt", "two"),

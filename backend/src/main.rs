@@ -15,5 +15,7 @@ async fn main() {
         .await
         .unwrap_or_else(|err| panic!("failed to bind {addr}: {err}"));
 
-    axum::serve(listener, router(state)).await.unwrap();
+    axum::serve(listener, router(state, &config.static_dir))
+        .await
+        .unwrap();
 }

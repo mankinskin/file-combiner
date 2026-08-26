@@ -4,13 +4,18 @@ pub mod contract;
 
 use axum::{routing::get, Router};
 pub use combine::AppState;
+use tower_http::services::{ServeDir, ServeFile};
 
-/// Builds the application router: the unauthenticated health check plus the
-/// authenticated combine endpoint. The static SPA fallback lands in a later package.
-pub fn router(state: AppState) -> Router {
+/// Builds the application router: the unauthenticated health check, the
+/// authenticated combine endpoint, and same-origin static frontend serving
+/// for every other path.
+pub fn router(state: AppState, static_dir: &str) -> Router {
+    let serve_dir = ServeDir::new(static_dir)
+        .not_found_service(ServeFile::new(format!("{static_dir}/index.html")));
     Router::new()
         .route("/healthz", get(healthz))
         .merge(combine::routes(state))
+        .fallback_service(serve_dir)
 }
 
 async fn healthz() -> &'static str {
@@ -31,7 +36,7 @@ mod tests {
 
     #[tokio::test]
     async fn healthz_returns_200_without_exposing_content() {
-        let app = router(test_state());
+        let app = router(test_state(), "frontend/dist");
         let response = app
             .oneshot(
                 Request::builder()

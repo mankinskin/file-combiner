@@ -1,3 +1,7 @@
 /target
 /frontend/dist
 .env
+frontend/e2e/node_modules
+frontend/e2e/test-results
+frontend/e2e/playwright-report
+frontend/e2e/playwright/.cache
