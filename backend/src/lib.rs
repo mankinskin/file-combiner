@@ -1,12 +1,16 @@
+pub mod combine;
 pub mod config;
 pub mod contract;
 
 use axum::{routing::get, Router};
+pub use combine::AppState;
 
-/// Builds the application router. The `/api/combine` route is added in a
-/// later package; this foundation only wires the health check.
-pub fn router() -> Router {
-    Router::new().route("/healthz", get(healthz))
+/// Builds the application router: the unauthenticated health check plus the
+/// authenticated combine endpoint. The static SPA fallback lands in a later package.
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .merge(combine::routes(state))
 }
 
 async fn healthz() -> &'static str {
@@ -21,9 +25,13 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    fn test_state() -> AppState {
+        AppState::new("bearer-token".to_string(), "probe-token".to_string())
+    }
+
     #[tokio::test]
     async fn healthz_returns_200_without_exposing_content() {
-        let app = router();
+        let app = router(test_state());
         let response = app
             .oneshot(
                 Request::builder()
