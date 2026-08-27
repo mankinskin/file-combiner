@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE="${1:?Usage: smoke-container.sh <image> <group-token> <probe-token>}"
+GROUP_TOKEN="${2:?Usage: smoke-container.sh <image> <group-token> <probe-token>}"
+PROBE_TOKEN="${3:?Usage: smoke-container.sh <image> <group-token> <probe-token>}"
+PORT="${PORT:-8080}"
+BASE_URL="http://127.0.0.1:${PORT}"
+CONTAINER_NAME="file-combiner-smoke-$$"
+WORKDIR="$(mktemp -d)"
+
+# curl on this host may be a native Windows build that cannot resolve MSYS
+# POSIX paths embedded inside a single -F argument; normalize when possible.
+to_curl_path() {
+  if command -v cygpath > /dev/null 2>&1; then
+    cygpath -m "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+WORKDIR_CURL="$(to_curl_path "$WORKDIR")"
+
+cleanup() {
+  docker rm -f "$CONTAINER_NAME" > /dev/null 2>&1 || true
+  rm -rf "$WORKDIR"
+}
+trap cleanup EXIT
+
+docker run -d --rm \
+  --name "$CONTAINER_NAME" \
+  -p "${PORT}:8080" \
+  -e COMBINE_BEARER_TOKEN="$GROUP_TOKEN" \
+  -e COMBINE_PROBE_TOKEN="$PROBE_TOKEN" \
+  "$IMAGE" > /dev/null
+
+READY=""
+for _ in $(seq 1 30); do
+  if curl -sf "${BASE_URL}/healthz" > /dev/null; then
+    READY=1
+    break
+  fi
+  sleep 1
+done
+[[ -n "$READY" ]] || { echo "container did not become healthy in time" >&2; exit 1; }
+
+echo "first content" > "${WORKDIR}/first.txt"
+echo "second content" > "${WORKDIR}/second.txt"
+head -c 1100000 /dev/zero | tr '\0' 'a' > "${WORKDIR}/oversized.txt"
+printf '\xFF\xFE\xFD' > "${WORKDIR}/invalid-utf8.txt"
+
+expect_status() {
+  local description="$1"
+  local expected="$2"
+  shift 2
+  local actual
+  actual="$(curl -s -o /dev/null -w '%{http_code}' "$@")"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "FAIL: ${description} (expected ${expected}, got ${actual})" >&2
+    exit 1
+  fi
+  echo "ok: ${description} (${actual})"
+}
+
+expect_status "authenticated combine succeeds" 200 \
+  -X POST "${BASE_URL}/api/combine" \
+  -H "Authorization: Bearer ${GROUP_TOKEN}" \
+  -F "first=@${WORKDIR_CURL}/first.txt;type=text/plain" \
+  -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain"
+
+expect_status "missing credentials rejected" 401 \
+  -X POST "${BASE_URL}/api/combine" \
+  -F "first=@${WORKDIR_CURL}/first.txt;type=text/plain" \
+  -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain"
+
+expect_status "wrong file count rejected" 400 \
+  -X POST "${BASE_URL}/api/combine" \
+  -H "Authorization: Bearer ${GROUP_TOKEN}" \
+  -F "first=@${WORKDIR_CURL}/first.txt;type=text/plain"
+
+expect_status "oversized file rejected" 413 \
+  -X POST "${BASE_URL}/api/combine" \
+  -H "Authorization: Bearer ${GROUP_TOKEN}" \
+  -F "first=@${WORKDIR_CURL}/oversized.txt;type=text/plain" \
+  -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain"
+
+expect_status "invalid UTF-8 rejected" 400 \
+  -X POST "${BASE_URL}/api/combine" \
+  -H "Authorization: Bearer ${GROUP_TOKEN}" \
+  -F "first=@${WORKDIR_CURL}/invalid-utf8.txt;type=text/plain" \
+  -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain"
+
+expect_status "probe token without probe header rejected" 401 \
+  -X POST "${BASE_URL}/api/combine" \
+  -H "Authorization: Bearer ${PROBE_TOKEN}" \
+  -F "first=@${WORKDIR_CURL}/first.txt;type=text/plain" \
+  -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain"
+
+expect_status "probe token with probe header accepted" 200 \
+  -X POST "${BASE_URL}/api/combine" \
+  -H "Authorization: Bearer ${PROBE_TOKEN}" \
+  -H "x-combine-probe: 1" \
+  -F "first=@${WORKDIR_CURL}/first.txt;type=text/plain" \
+  -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain"
+
+echo "checking capacity: five concurrent combine requests should include at least one 429"
+STATUS_DIR="$(mktemp -d)"
+for i in 1 2 3 4 5; do
+  (curl -s -o /dev/null -w '%{http_code}' \
+    -X POST "${BASE_URL}/api/combine" \
+    -H "Authorization: Bearer ${GROUP_TOKEN}" \
+    -F "first=@${WORKDIR_CURL}/first.txt;type=text/plain" \
+    -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain" \
+    > "${STATUS_DIR}/${i}") &
+done
+wait
+if grep -q 429 "${STATUS_DIR}"/*; then
+  echo "ok: capacity limit observed (429 seen among 5 concurrent requests)"
+else
+  echo "warning: no 429 observed among 5 concurrent requests (timing-dependent check)" >&2
+fi
+rm -rf "$STATUS_DIR"
+
+echo "container smoke checks passed"

@@ -1,0 +1,91 @@
+name: ci
+
+on:
+  push:
+    branches: [main, production]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  RUST_TOOLCHAIN: "1.90.0"
+  TRUNK_VERSION: "0.21.14"
+  NODE_VERSION: "22.14.0"
+
+jobs:
+  rust-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install "${RUST_TOOLCHAIN}"
+          rustup component add rustfmt clippy --toolchain "${RUST_TOOLCHAIN}"
+          rustup default "${RUST_TOOLCHAIN}"
+      - name: cargo fmt --check
+        run: cargo fmt -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  backend-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup toolchain install "${RUST_TOOLCHAIN}" && rustup default "${RUST_TOOLCHAIN}"
+      - name: cargo test -p backend
+        run: cargo test -p backend
+
+  frontend-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+      - name: Install Rust toolchain and wasm target
+        run: |
+          rustup toolchain install "${RUST_TOOLCHAIN}"
+          rustup target add wasm32-unknown-unknown --toolchain "${RUST_TOOLCHAIN}"
+          rustup default "${RUST_TOOLCHAIN}"
+      - name: Install trunk
+        run: cargo install trunk --version "${TRUNK_VERSION}" --locked
+      - name: Install e2e dependencies
+        run: npm ci --prefix frontend/e2e
+      - name: Install Playwright browser
+        run: npx --prefix frontend/e2e playwright install --with-deps chromium
+      - name: Build frontend and run browser smoke
+        run: bash scripts/smoke-browser.sh test-group-token
+
+  container-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t file-combiner:local .
+      - name: Container smoke test
+        run: bash scripts/smoke-container.sh file-combiner:local test-group-token test-probe-token
+
+  deploy-render:
+    needs: [rust-quality, backend-contract, frontend-browser, container-api]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/production'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Render
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: bash scripts/deploy-render.sh "$RENDER_API_KEY" "$RENDER_SERVICE_ID"
+      - name: Post-deploy smoke test
+        env:
+          RENDER_EXTERNAL_URL: ${{ secrets.RENDER_EXTERNAL_URL }}
+          COMBINE_PROBE_TOKEN: ${{ secrets.COMBINE_PROBE_TOKEN }}
+        run: bash scripts/smoke-deploy.sh "$RENDER_EXTERNAL_URL" "$COMBINE_PROBE_TOKEN"

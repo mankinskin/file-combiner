@@ -4,7 +4,7 @@ Standalone Dioxus (frontend) and Axum (backend) application that combines exactl
 
 ## Status
 
-Waypoints 1-3 are implemented: the Cargo workspace and shared v1 contract, the authenticated `/api/combine` endpoint with bounded in-memory multipart handling, and the Dioxus browser UI (token entry, two ordered file slots, submit, and download) served same-origin by Axum alongside `/healthz`. The container image and CI/CD land in the final waypoint.
+All four waypoints are implemented: the Cargo workspace and shared v1 contract, the authenticated `/api/combine` endpoint with bounded in-memory multipart handling, the Dioxus browser UI served same-origin by Axum, and the container image with GitHub Actions CI/CD to Render.
 
 ## Runtime configuration
 
@@ -55,6 +55,27 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test -p backend
 (cd frontend && trunk build --release)
 bash scripts/smoke-browser.sh <disposable-token>
+docker build -t file-combiner:local .
+bash scripts/smoke-container.sh file-combiner:local <group-token> <probe-token>
 ```
 
 `scripts/smoke-browser.sh` builds the frontend, starts the backend on an ephemeral token, waits for `/healthz`, then runs the Playwright harness in `frontend/e2e/` against the running instance.
+
+`scripts/smoke-container.sh` starts the built image with disposable tokens, waits for `/healthz`, then exercises success, unauthorized, wrong-count, oversized, invalid-UTF-8, and probe-header fixtures against the running container.
+
+## Container image
+
+The repository root `Dockerfile` is a two-stage build: the `builder` stage compiles the Trunk frontend and the release `backend` binary from the same Rust workspace, and the `runtime` stage copies only the built binary and `frontend/dist` into a slim Debian image. The backend binds to `0.0.0.0:$PORT` and serves the frontend, `/healthz`, and `/api/*` from that single process — set `COMBINE_BEARER_TOKEN` and `COMBINE_PROBE_TOKEN` when running the container, since the image itself never bakes in any secret value.
+
+## CI/CD
+
+`.github/workflows/ci.yml` runs four validation jobs on every push and pull request: `rust-quality` (fmt + clippy), `backend-contract` (`cargo test -p backend`), `frontend-browser` (Trunk build plus the Playwright smoke), and `container-api` (Docker build plus the container smoke). A fifth job, `deploy-render`, depends on all four and only runs on a push to the protected `production` branch; it calls `scripts/deploy-render.sh` to create and poll a Render deployment through the Render API, then `scripts/smoke-deploy.sh` to verify `/healthz` and a probe-authenticated combine request post-deploy. Neither script ever prints a token, an authorization header, or file content.
+
+### Operator prerequisites
+
+Before the first production deployment, an operator must:
+
+- Protect the `production` branch in GitHub.
+- Create the Render service for this repository.
+- Store distinct, non-empty `COMBINE_BEARER_TOKEN` and `COMBINE_PROBE_TOKEN` values as Render environment secrets.
+- Configure GitHub Actions repository secrets: `RENDER_API_KEY`, `RENDER_SERVICE_ID`, `RENDER_EXTERNAL_URL`, and a `COMBINE_PROBE_TOKEN` matching the value stored in Render.
