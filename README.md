@@ -32,7 +32,7 @@ The frontend and backend are served from a single Axum process, so there's one b
 1. Build the browser frontend (produces `frontend/dist`):
 
    ```bash
-   cd frontend && trunk build --release && cd ..
+   (cd frontend && trunk build --release)
    ```
 
 2. Start the backend with your own tokens (pick any non-empty, distinct values):
