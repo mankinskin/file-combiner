@@ -6,8 +6,7 @@ RUN rustup target add wasm32-unknown-unknown \
     && cargo install trunk --version 0.21.14 --locked
 
 COPY . .
-RUN cd frontend && trunk build --release
-RUN cargo build --release -p backend
+RUN chmod +x ./build.sh && ./build.sh
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
