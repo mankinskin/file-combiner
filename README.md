@@ -25,6 +25,28 @@ rustup target add wasm32-unknown-unknown --toolchain 1.90.0
 cargo install trunk --version 0.21.14 --locked
 ```
 
+## Run it locally
+
+The frontend and backend are served from a single Axum process, so there's one build step and one run step.
+
+1. Build the browser frontend (produces `frontend/dist`):
+
+   ```bash
+   cd frontend && trunk build --release && cd ..
+   ```
+
+2. Start the backend with your own tokens (pick any non-empty, distinct values):
+
+   ```bash
+   COMBINE_BEARER_TOKEN=my-local-token COMBINE_PROBE_TOKEN=my-local-probe-token cargo run -p backend
+   ```
+
+   By default this binds to `http://127.0.0.1:8080` and serves the frontend from `frontend/dist`.
+
+3. Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in a browser. Enter the same value you set for `COMBINE_BEARER_TOKEN` in the **Token** field, choose a first and second text file (each under 1 MiB), then click **Combine and download** to receive `combined.txt`.
+
+Re-run step 1 after any frontend change; the backend only needs restarting after a backend change (`STATIC_DIR` always points at the same `frontend/dist` folder built in step 1).
+
 ## Validation
 
 ```bash
