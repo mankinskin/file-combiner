@@ -116,12 +116,17 @@ async fn combine(
         Err(_) => return error_response(ErrorCode::ServiceBusy, "too many concurrent requests"),
     };
 
-    let response = match timeout(
-        Duration::from_secs(REQUEST_TIMEOUT_SECS),
-        run_combine(multipart),
-    )
-    .await
-    {
+    run_with_deadline(permit, run_combine(multipart)).await
+}
+
+/// Runs `op` under the request deadline while holding `permit`. Extracted so
+/// tests can inject an operation that never resolves and prove the timeout
+/// branch without depending on wall-clock time.
+async fn run_with_deadline<Fut>(permit: tokio::sync::OwnedSemaphorePermit, op: Fut) -> Response
+where
+    Fut: std::future::Future<Output = Response>,
+{
+    let response = match timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), op).await {
         Ok(response) => response,
         Err(_) => error_response(ErrorCode::RequestTimeout, "request exceeded the time limit"),
     };
@@ -209,4 +214,28 @@ async fn run_combine(mut multipart: Multipart) -> Response {
         )
         .body(Body::from(combined))
         .expect("response with well-formed static headers")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exercises the actual timeout branch: an operation that never
+    /// resolves must be aborted once the deadline elapses, independent of
+    /// wall-clock time.
+    #[tokio::test(start_paused = true)]
+    async fn deadline_returns_request_timeout_response() {
+        let state = AppState::new("token".to_string(), "probe".to_string());
+        let permit = state
+            .combine_slots
+            .clone()
+            .try_acquire_owned()
+            .expect("fresh semaphore has capacity");
+
+        let handle = tokio::spawn(run_with_deadline(permit, std::future::pending()));
+        tokio::time::advance(Duration::from_secs(REQUEST_TIMEOUT_SECS + 1)).await;
+
+        let response = handle.await.expect("task completes");
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+    }
 }

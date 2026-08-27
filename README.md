@@ -4,7 +4,15 @@ Standalone Dioxus (frontend) and Axum (backend) application that combines exactl
 
 ## Status
 
-All four waypoints are implemented: the Cargo workspace and shared v1 contract, the authenticated `/api/combine` endpoint with bounded in-memory multipart handling, the Dioxus browser UI served same-origin by Axum, and the container image with GitHub Actions CI/CD to Render.
+All four original waypoints, plus the browser UX reconciliation described in the [file-combiner UI reconciliation dossier](../transcripts/27-08-2026_app-ui-design-auth-crates/README.md), are implemented: the Cargo workspace and shared v1 contract, the authenticated `/api/combine` endpoint with bounded in-memory multipart handling, the centered Dioxus document workspace served same-origin by Axum, and the container image with GitHub Actions CI/CD to Render.
+
+## Browser UX contract
+
+- **Two ordered upload slots.** Each slot locally decodes the selected file with fatal (strict) UTF-8 decoding. A decoding failure rejects that slot with an accessible error, blocks submission, and shows no preview; it never falls back to binary/hex display.
+- **Read-only previews only.** Valid text is rendered as sanitized, scrollable, keyboard-focusable text — never as injected HTML. Control characters other than tab/newline are visibly replaced. The preview cannot edit the file; the original selected bytes are what is submitted.
+- **Privacy boundary.** Local validation and preview never leave the browser, and the workspace never displays raw backend logs, request headers, credentials, or server metadata — only the four fixed processing stages (access validation, file reading, combining, preparing download) and the final result.
+- **Retry and reset.** A failed request keeps the access key, file selections, and previews in memory for retry. An explicit Reset, a successful download, or a page reload clears all local state.
+- **Result.** A successful combine shows the response text in a read-only preview plus an explicit download action; the downloaded bytes are exactly the endpoint response (`first + "\n" + second`).
 
 ## Runtime configuration
 
@@ -43,7 +51,7 @@ The frontend and backend are served from a single Axum process, so there's one b
 
    By default this binds to `http://127.0.0.1:8080` and serves the frontend from `frontend/dist`.
 
-3. Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in a browser. Enter the same value you set for `COMBINE_BEARER_TOKEN` in the **Token** field, choose a first and second text file (each under 1 MiB), then click **Combine and download** to receive `combined.txt`.
+3. Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in a browser. Enter the same value you set for `COMBINE_BEARER_TOKEN` in the **Access key** field, choose a first and second UTF-8 text file (each under 1 MiB) to see their read-only previews, then click **Combine** to see the processing panel and, on success, the result preview and **Download combined.txt** action.
 
 Re-run step 1 after any frontend change; the backend only needs restarting after a backend change (`STATIC_DIR` always points at the same `frontend/dist` folder built in step 1).
 

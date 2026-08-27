@@ -3,8 +3,8 @@ use js_sys::{Array, Reflect, Uint8Array};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    Blob, BlobPropertyBag, FormData as WebFormData, Headers, HtmlAnchorElement, Request,
-    RequestInit, RequestMode, Response as WebResponse, Url,
+    Blob, BlobPropertyBag, FormData as WebFormData, Headers, HtmlAnchorElement, HtmlElement,
+    Request, RequestInit, RequestMode, Response as WebResponse, Url,
 };
 
 /// Must match `backend::contract::MAX_FILE_BYTES`.
@@ -18,6 +18,98 @@ fn main() {
 struct SelectedFile {
     name: String,
     bytes: Vec<u8>,
+    preview: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    AccessValidation,
+    FileReading,
+    Combining,
+    PreparingDownload,
+}
+
+impl Stage {
+    const ALL: [Stage; 4] = [
+        Stage::AccessValidation,
+        Stage::FileReading,
+        Stage::Combining,
+        Stage::PreparingDownload,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Stage::AccessValidation => "Access validation",
+            Stage::FileReading => "File reading",
+            Stage::Combining => "Combining",
+            Stage::PreparingDownload => "Preparing download",
+        }
+    }
+
+    fn index(self) -> usize {
+        Stage::ALL
+            .iter()
+            .position(|s| *s == self)
+            .expect("stage is in ALL")
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct CombineResult {
+    preview: String,
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq)]
+enum RequestState {
+    Idle,
+    Submitting(Stage),
+    Success(CombineResult),
+    Failed(String),
+}
+
+/// Replaces control characters other than tab/newline with a visible
+/// placeholder so previews never hide non-printable content.
+fn sanitize_preview(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\n' | '\t' => c,
+            c if c.is_control() => '\u{FFFD}',
+            c => c,
+        })
+        .collect()
+}
+
+fn focus_element(id: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(element) = document.get_element_by_id(id) else {
+        return;
+    };
+    if let Ok(html_element) = element.dyn_into::<HtmlElement>() {
+        let _ = html_element.focus();
+    }
+}
+
+/// Clears a native `<input type="file">` element's selection, since setting
+/// application state alone does not reset the browser's own file-input value.
+fn clear_file_input(id: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(element) = document.get_element_by_id(id) else {
+        return;
+    };
+    if let Ok(input) = element.dyn_into::<web_sys::HtmlInputElement>() {
+        input.set_value("");
+    }
 }
 
 /// Combines two authenticated text uploads through same-origin `/api/combine`.
@@ -26,18 +118,18 @@ struct SelectedFile {
 #[component]
 fn App() -> Element {
     let mut token = use_signal(String::new);
-    let first_file = use_signal(|| Option::<SelectedFile>::None);
-    let second_file = use_signal(|| Option::<SelectedFile>::None);
-    let mut status = use_signal(|| Option::<String>::None);
-    let mut busy = use_signal(|| false);
+    let mut first_file = use_signal(|| Option::<SelectedFile>::None);
+    let mut second_file = use_signal(|| Option::<SelectedFile>::None);
+    let mut state = use_signal(|| RequestState::Idle);
 
+    let busy = matches!(*state.read(), RequestState::Submitting(_));
     let can_submit = !token.read().is_empty()
         && first_file.read().is_some()
         && second_file.read().is_some()
-        && !*busy.read();
+        && !busy;
 
     let on_submit = move |_| {
-        let token = token.read().clone();
+        let token_value = token.read().clone();
         let Some(first) = first_file.read().clone() else {
             return;
         };
@@ -45,49 +137,138 @@ fn App() -> Element {
             return;
         };
         spawn(async move {
-            busy.set(true);
-            status.set(None);
-            match submit_combine(&token, &first, &second).await {
+            state.set(RequestState::Submitting(Stage::AccessValidation));
+            state.set(RequestState::Submitting(Stage::FileReading));
+            state.set(RequestState::Submitting(Stage::Combining));
+            match submit_combine(&token_value, &first, &second).await {
                 Ok(bytes) => {
-                    trigger_download(&bytes);
-                    status.set(Some("Downloaded combined.txt".to_string()));
+                    state.set(RequestState::Submitting(Stage::PreparingDownload));
+                    match std::str::from_utf8(&bytes) {
+                        Ok(text) => state.set(RequestState::Success(CombineResult {
+                            preview: sanitize_preview(text),
+                            bytes,
+                        })),
+                        Err(_) => {
+                            state.set(RequestState::Failed(
+                                "Received an unexpected response".to_string(),
+                            ));
+                        }
+                    }
                 }
-                Err(message) => status.set(Some(message)),
+                Err(message) => state.set(RequestState::Failed(message)),
             }
-            busy.set(false);
         });
     };
 
+    let on_reset = move |_| {
+        token.set(String::new());
+        first_file.set(None);
+        second_file.set(None);
+        state.set(RequestState::Idle);
+        clear_file_input("first-file");
+        clear_file_input("second-file");
+        focus_element("token-input");
+    };
+
+    let on_download = move |_| {
+        if let RequestState::Success(result) = &*state.read() {
+            trigger_download(&result.bytes);
+        }
+        token.set(String::new());
+        first_file.set(None);
+        second_file.set(None);
+        state.set(RequestState::Idle);
+        clear_file_input("first-file");
+        clear_file_input("second-file");
+    };
+
     rsx! {
-        main {
-            h1 { "file-combiner" }
-            p { "Enter the shared trusted-group token and choose two text files in order." }
-            label {
-                "Token"
-                input {
-                    r#type: "password",
-                    value: "{token}",
-                    oninput: move |evt| token.set(evt.value()),
+        main { class: "workspace",
+            header { class: "workspace-header",
+                h1 { "file-combiner" }
+                p { "Enter the shared access key and choose two ordered text files to combine." }
+            }
+            section { class: "workspace-body",
+                div { class: "action-panel",
+                    label { r#for: "token-input", "Access key" }
+                    input {
+                        id: "token-input",
+                        r#type: "password",
+                        value: "{token}",
+                        disabled: busy,
+                        oninput: move |evt| token.set(evt.value()),
+                    }
+                    div { class: "actions",
+                        button {
+                            class: "primary",
+                            disabled: !can_submit,
+                            "aria-busy": if busy { "true" } else { "false" },
+                            onclick: on_submit,
+                            "Combine"
+                        }
+                        button {
+                            r#type: "button",
+                            class: "secondary",
+                            disabled: busy,
+                            onclick: on_reset,
+                            "Reset"
+                        }
+                    }
+                    if let RequestState::Failed(message) = &*state.read() {
+                        p { class: "request-error", role: "alert", "{message}" }
+                    }
+                }
+                FileSlot { label: "First file", slot_id: "first-file", selected: first_file }
+                FileSlot { label: "Second file", slot_id: "second-file", selected: second_file }
+            }
+            if let RequestState::Submitting(stage) = &*state.read() {
+                section { class: "processing-panel", role: "status", "aria-live": "polite",
+                    h2 { "Processing" }
+                    ul {
+                        for s in Stage::ALL {
+                            {
+                                let class_name: &str = if s.index() < stage.index() {
+                                    "done"
+                                } else if s == *stage {
+                                    "active"
+                                } else {
+                                    "pending"
+                                };
+                                rsx! {
+                                    li { class: class_name, "{s.label()}" }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            FileSlot { label: "First file", selected: first_file }
-            FileSlot { label: "Second file", selected: second_file }
-            button {
-                disabled: !can_submit,
-                onclick: on_submit,
-                "Combine and download"
-            }
-            if let Some(message) = status.read().clone() {
-                p { "{message}" }
+            if let RequestState::Success(result) = state.read().clone() {
+                section { class: "result-panel", role: "region", "aria-label": "Combined result",
+                    h2 { "Result" }
+                    div {
+                        class: "file-preview",
+                        tabindex: "0",
+                        role: "region",
+                        "aria-label": "Combined result preview",
+                        pre { "{result.preview}" }
+                    }
+                    button { class: "primary", onclick: on_download, "Download combined.txt" }
+                }
             }
         }
     }
 }
 
 #[component]
-fn FileSlot(label: &'static str, selected: Signal<Option<SelectedFile>>) -> Element {
+fn FileSlot(
+    label: &'static str,
+    slot_id: &'static str,
+    selected: Signal<Option<SelectedFile>>,
+) -> Element {
     let mut selected = selected;
     let mut error = use_signal(|| Option::<String>::None);
+    let error_id = format!("{slot_id}-error");
+    let preview_id = format!("{slot_id}-preview");
 
     let on_change = move |evt: Event<FormData>| {
         let Some(file_engine) = evt.files() else {
@@ -99,6 +280,7 @@ fn FileSlot(label: &'static str, selected: Signal<Option<SelectedFile>>) -> Elem
             };
             let Some(size) = file_engine.file_size(&name).await else {
                 error.set(Some("Could not read file".to_string()));
+                selected.set(None);
                 return;
             };
             if size > MAX_FILE_BYTES {
@@ -108,23 +290,49 @@ fn FileSlot(label: &'static str, selected: Signal<Option<SelectedFile>>) -> Elem
             }
             let Some(bytes) = file_engine.read_file(&name).await else {
                 error.set(Some("Could not read file".to_string()));
+                selected.set(None);
                 return;
             };
-            error.set(None);
-            selected.set(Some(SelectedFile { name, bytes }));
+            match std::str::from_utf8(&bytes) {
+                Ok(text) => {
+                    error.set(None);
+                    selected.set(Some(SelectedFile {
+                        name,
+                        preview: sanitize_preview(text),
+                        bytes,
+                    }));
+                }
+                Err(_) => {
+                    error.set(Some("File is not valid UTF-8 text".to_string()));
+                    selected.set(None);
+                }
+            }
         });
     };
 
     rsx! {
-        label {
-            "{label}"
-            input { r#type: "file", onchange: on_change }
-        }
-        if let Some(file) = selected.read().clone() {
-            span { " {file.name} ({file.bytes.len()} bytes)" }
-        }
-        if let Some(message) = error.read().clone() {
-            span { " {message}" }
+        div { class: "file-slot",
+            label { r#for: "{slot_id}", "{label}" }
+            input {
+                id: "{slot_id}",
+                r#type: "file",
+                accept: "text/plain,.txt",
+                onchange: on_change,
+            }
+            if let Some(file) = selected.read().clone() {
+                div {
+                    class: "file-preview",
+                    id: "{preview_id}",
+                    tabindex: "0",
+                    role: "region",
+                    "aria-label": "{label} preview: {file.name}",
+                    pre { "{file.preview}" }
+                }
+                span { class: "file-meta", "{file.name} ({file.bytes.len()} bytes)" }
+            }
+            if let Some(message) = error.read().clone() {
+                span { id: "{error_id}", class: "file-error", role: "alert", "{message}" }
+            }
         }
     }
 }

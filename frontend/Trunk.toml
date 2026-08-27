@@ -2,4 +2,4 @@
 target = "index.html"
 
 [watch]
-watch = ["src"]
+watch = ["src", "styles"]

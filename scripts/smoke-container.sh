@@ -102,22 +102,8 @@ expect_status "probe token with probe header accepted" 200 \
   -F "first=@${WORKDIR_CURL}/first.txt;type=text/plain" \
   -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain"
 
-echo "checking capacity: five concurrent combine requests should include at least one 429"
-STATUS_DIR="$(mktemp -d)"
-for i in 1 2 3 4 5; do
-  (curl -s -o /dev/null -w '%{http_code}' \
-    -X POST "${BASE_URL}/api/combine" \
-    -H "Authorization: Bearer ${GROUP_TOKEN}" \
-    -F "first=@${WORKDIR_CURL}/first.txt;type=text/plain" \
-    -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain" \
-    > "${STATUS_DIR}/${i}") &
-done
-wait
-if grep -q 429 "${STATUS_DIR}"/*; then
-  echo "ok: capacity limit observed (429 seen among 5 concurrent requests)"
-else
-  echo "warning: no 429 observed among 5 concurrent requests (timing-dependent check)" >&2
-fi
-rm -rf "$STATUS_DIR"
+echo "checking capacity: deterministic proof lives in the Rust integration test"
+echo "(see backend/tests/combine.rs::fifth_concurrent_request_returns_service_busy);"
+echo "ordinary fast container requests cannot reliably observe 429 under real timing, so this smoke script does not attempt to."
 
 echo "container smoke checks passed"
