@@ -70,9 +70,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/backend ./backend
+COPY --from=builder /app/target/release/backend ./server
 COPY --from=builder /app/frontend/dist ./frontend/dist
+COPY --from=builder /app/backend/assets ./assets
 
 ENV STATIC_DIR=/app/frontend/dist
+ENV ASSETS_DIR=/app/assets
 EXPOSE 8080
-ENTRYPOINT ["./backend"]
+ENTRYPOINT ["./server"]

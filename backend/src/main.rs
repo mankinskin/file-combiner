@@ -13,7 +13,7 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let assets_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+    let assets_dir = std::path::Path::new(&config.assets_dir);
     let agent_config = AgentConfig::load(&assets_dir.join("agent-builder.toml"))
         .unwrap_or_else(|err| {
             eprintln!("combinator-agent configuration error: {err}");

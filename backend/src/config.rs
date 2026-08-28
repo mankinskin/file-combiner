@@ -8,6 +8,7 @@ pub struct AppConfig {
     pub probe_token: String,
     pub port: u16,
     pub static_dir: String,
+    pub assets_dir: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +48,7 @@ impl AppConfig {
             env::var("COMBINE_PROBE_TOKEN").ok(),
             env::var("PORT").ok(),
             env::var("STATIC_DIR").ok(),
+            env::var("ASSETS_DIR").ok(),
         )
     }
 
@@ -55,6 +57,7 @@ impl AppConfig {
         probe_token: Option<String>,
         port: Option<String>,
         static_dir: Option<String>,
+        assets_dir: Option<String>,
     ) -> Result<Self, ConfigError> {
         let bearer_token = bearer_token.unwrap_or_default();
         if bearer_token.is_empty() {
@@ -74,11 +77,13 @@ impl AppConfig {
             None => 8080,
         };
         let static_dir = static_dir.unwrap_or_else(|| "frontend/dist".to_string());
+        let assets_dir = assets_dir.unwrap_or_else(|| "backend/assets".to_string());
         Ok(AppConfig {
             bearer_token,
             probe_token,
             port,
             static_dir,
+            assets_dir,
         })
     }
 }
@@ -89,27 +94,31 @@ mod tests {
 
     #[test]
     fn rejects_missing_bearer_token() {
-        let err = AppConfig::from_values(None, Some("probe".into()), None, None).unwrap_err();
+        let err =
+            AppConfig::from_values(None, Some("probe".into()), None, None, None).unwrap_err();
         assert_eq!(err, ConfigError::MissingBearerToken);
     }
 
     #[test]
     fn rejects_empty_bearer_token() {
-        let err = AppConfig::from_values(Some(String::new()), Some("probe".into()), None, None)
-            .unwrap_err();
+        let err =
+            AppConfig::from_values(Some(String::new()), Some("probe".into()), None, None, None)
+                .unwrap_err();
         assert_eq!(err, ConfigError::MissingBearerToken);
     }
 
     #[test]
     fn rejects_missing_probe_token() {
-        let err = AppConfig::from_values(Some("bearer".into()), None, None, None).unwrap_err();
+        let err =
+            AppConfig::from_values(Some("bearer".into()), None, None, None, None).unwrap_err();
         assert_eq!(err, ConfigError::MissingProbeToken);
     }
 
     #[test]
     fn rejects_equal_tokens() {
-        let err = AppConfig::from_values(Some("same".into()), Some("same".into()), None, None)
-            .unwrap_err();
+        let err =
+            AppConfig::from_values(Some("same".into()), Some("same".into()), None, None, None)
+                .unwrap_err();
         assert_eq!(err, ConfigError::TokensMustDiffer);
     }
 
@@ -120,6 +129,7 @@ mod tests {
             Some("probe".into()),
             Some("not-a-port".into()),
             None,
+            None,
         )
         .unwrap_err();
         assert!(matches!(err, ConfigError::InvalidPort(_)));
@@ -128,11 +138,12 @@ mod tests {
     #[test]
     fn accepts_valid_distinct_tokens_and_defaults_port_and_static_dir() {
         let config =
-            AppConfig::from_values(Some("bearer".into()), Some("probe".into()), None, None)
+            AppConfig::from_values(Some("bearer".into()), Some("probe".into()), None, None, None)
                 .unwrap();
         assert_eq!(config.bearer_token, "bearer");
         assert_eq!(config.probe_token, "probe");
         assert_eq!(config.port, 8080);
         assert_eq!(config.static_dir, "frontend/dist");
+        assert_eq!(config.assets_dir, "backend/assets");
     }
 }

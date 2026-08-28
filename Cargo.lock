@@ -11,6 +11,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "agent-builder"
 version = "0.1.0"
+source = "git+ssh://git@github.com/mankinskin/agent-builder?branch=main#eec8bee08714d8a571946ad7257f9c1d0c54d104"
 dependencies = [
  "anyhow",
  "clap",
