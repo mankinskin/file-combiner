@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use js_sys::{Array, Reflect, Uint8Array};
+use js_sys::{Array, Promise, Reflect, Uint8Array};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
@@ -66,6 +66,19 @@ enum RequestState {
     Submitting(Stage),
     Success(CombineResult),
     Failed(String),
+}
+
+/// Awaiting this hands control back to the browser for one render/paint
+/// cycle before continuing, so a signal write (e.g. showing the "Submitting"
+/// status panel) reaches the DOM even if the next awaited call resolves
+/// fast enough to otherwise coalesce into the same render.
+async fn next_frame() {
+    let promise = Promise::new(&mut |resolve, _reject| {
+        if let Some(window) = web_sys::window() {
+            let _ = window.request_animation_frame(&resolve);
+        }
+    });
+    let _ = JsFuture::from(promise).await;
 }
 
 /// Replaces control characters other than tab/newline with a visible
@@ -140,6 +153,7 @@ fn App() -> Element {
             state.set(RequestState::Submitting(Stage::AccessValidation));
             state.set(RequestState::Submitting(Stage::FileReading));
             state.set(RequestState::Submitting(Stage::Combining));
+            next_frame().await;
             match submit_combine(&token_value, &first, &second).await {
                 Ok(bytes) => {
                     state.set(RequestState::Submitting(Stage::PreparingDownload));
