@@ -9,6 +9,10 @@ pub struct AppConfig {
     pub port: u16,
     pub static_dir: String,
     pub assets_dir: String,
+    /// When true, use a deterministic combine backend instead of the real
+    /// Copilot-backed agent. Set via `COMBINE_AGENT_BACKEND=fake`; intended
+    /// only for smoke tests that must not depend on live model credentials.
+    pub use_fake_combine_backend: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +53,7 @@ impl AppConfig {
             env::var("PORT").ok(),
             env::var("STATIC_DIR").ok(),
             env::var("ASSETS_DIR").ok(),
+            env::var("COMBINE_AGENT_BACKEND").ok(),
         )
     }
 
@@ -58,6 +63,7 @@ impl AppConfig {
         port: Option<String>,
         static_dir: Option<String>,
         assets_dir: Option<String>,
+        agent_backend: Option<String>,
     ) -> Result<Self, ConfigError> {
         let bearer_token = bearer_token.unwrap_or_default();
         if bearer_token.is_empty() {
@@ -78,12 +84,14 @@ impl AppConfig {
         };
         let static_dir = static_dir.unwrap_or_else(|| "frontend/dist".to_string());
         let assets_dir = assets_dir.unwrap_or_else(|| "backend/assets".to_string());
+        let use_fake_combine_backend = agent_backend.as_deref() == Some("fake");
         Ok(AppConfig {
             bearer_token,
             probe_token,
             port,
             static_dir,
             assets_dir,
+            use_fake_combine_backend,
         })
     }
 }
@@ -94,30 +102,43 @@ mod tests {
 
     #[test]
     fn rejects_missing_bearer_token() {
-        let err = AppConfig::from_values(None, Some("probe".into()), None, None, None).unwrap_err();
+        let err =
+            AppConfig::from_values(None, Some("probe".into()), None, None, None, None).unwrap_err();
         assert_eq!(err, ConfigError::MissingBearerToken);
     }
 
     #[test]
     fn rejects_empty_bearer_token() {
-        let err =
-            AppConfig::from_values(Some(String::new()), Some("probe".into()), None, None, None)
-                .unwrap_err();
+        let err = AppConfig::from_values(
+            Some(String::new()),
+            Some("probe".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(err, ConfigError::MissingBearerToken);
     }
 
     #[test]
     fn rejects_missing_probe_token() {
-        let err =
-            AppConfig::from_values(Some("bearer".into()), None, None, None, None).unwrap_err();
+        let err = AppConfig::from_values(Some("bearer".into()), None, None, None, None, None)
+            .unwrap_err();
         assert_eq!(err, ConfigError::MissingProbeToken);
     }
 
     #[test]
     fn rejects_equal_tokens() {
-        let err =
-            AppConfig::from_values(Some("same".into()), Some("same".into()), None, None, None)
-                .unwrap_err();
+        let err = AppConfig::from_values(
+            Some("same".into()),
+            Some("same".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(err, ConfigError::TokensMustDiffer);
     }
 
@@ -127,6 +148,7 @@ mod tests {
             Some("bearer".into()),
             Some("probe".into()),
             Some("not-a-port".into()),
+            None,
             None,
             None,
         )
@@ -142,6 +164,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(config.bearer_token, "bearer");
@@ -149,5 +172,20 @@ mod tests {
         assert_eq!(config.port, 8080);
         assert_eq!(config.static_dir, "frontend/dist");
         assert_eq!(config.assets_dir, "backend/assets");
+        assert!(!config.use_fake_combine_backend);
+    }
+
+    #[test]
+    fn enables_fake_combine_backend_only_when_requested() {
+        let config = AppConfig::from_values(
+            Some("bearer".into()),
+            Some("probe".into()),
+            None,
+            None,
+            None,
+            Some("fake".into()),
+        )
+        .unwrap();
+        assert!(config.use_fake_combine_backend);
     }
 }

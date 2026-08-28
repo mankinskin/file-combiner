@@ -19,7 +19,10 @@ trap cleanup EXIT
 
 (cd frontend && trunk build --release)
 
+# This checks the HTTP/UI flow deterministically; it must never require live
+# model credentials, so it uses the fake combine backend by default.
 COMBINE_BEARER_TOKEN="$TOKEN" COMBINE_PROBE_TOKEN="smoke-probe-token" PORT="$PORT" STATIC_DIR="frontend/dist" \
+  COMBINE_AGENT_BACKEND="${COMBINE_AGENT_BACKEND:-fake}" \
   cargo run -p backend &
 BACKEND_PID=$!
 

@@ -1,6 +1,6 @@
 use agent_builder::config::Config as AgentConfig;
 use agent_builder::template::AgentTemplate;
-use backend::combinator_agent::RigCombineBackend;
+use backend::combinator_agent::{CombineAgentBackend, FakeCombineBackend, RigCombineBackend};
 use backend::config::AppConfig;
 use backend::{router, AppState};
 use std::net::SocketAddr;
@@ -13,18 +13,24 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let assets_dir = std::path::Path::new(&config.assets_dir);
-    let agent_config =
-        AgentConfig::load(&assets_dir.join("agent-builder.toml")).unwrap_or_else(|err| {
-            eprintln!("combinator-agent configuration error: {err}");
-            std::process::exit(1);
-        });
-    let agent_template = AgentTemplate::load(&agent_config.template_path()).unwrap_or_else(|err| {
-        eprintln!("combinator-agent template error: {err}");
-        std::process::exit(1);
-    });
-    let backend: Arc<dyn backend::combinator_agent::CombineAgentBackend> =
-        Arc::new(RigCombineBackend::new(agent_config, agent_template));
+    // COMBINE_AGENT_BACKEND=fake is for smoke tests only: it exercises the
+    // full HTTP/UI flow without requiring live Copilot credentials.
+    let backend: Arc<dyn CombineAgentBackend> = if config.use_fake_combine_backend {
+        Arc::new(FakeCombineBackend)
+    } else {
+        let assets_dir = std::path::Path::new(&config.assets_dir);
+        let agent_config = AgentConfig::load(&assets_dir.join("agent-builder.toml"))
+            .unwrap_or_else(|err| {
+                eprintln!("combinator-agent configuration error: {err}");
+                std::process::exit(1);
+            });
+        let agent_template =
+            AgentTemplate::load(&agent_config.template_path()).unwrap_or_else(|err| {
+                eprintln!("combinator-agent template error: {err}");
+                std::process::exit(1);
+            });
+        Arc::new(RigCombineBackend::new(agent_config, agent_template))
+    };
 
     let state = AppState::new(
         config.bearer_token.clone(),

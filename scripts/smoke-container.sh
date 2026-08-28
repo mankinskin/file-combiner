@@ -31,6 +31,7 @@ docker run -d --rm \
   -p "${PORT}:8080" \
   -e COMBINE_BEARER_TOKEN="$GROUP_TOKEN" \
   -e COMBINE_PROBE_TOKEN="$PROBE_TOKEN" \
+  -e COMBINE_AGENT_BACKEND="${COMBINE_AGENT_BACKEND:-fake}" \
   "$IMAGE" > /dev/null
 
 READY=""
