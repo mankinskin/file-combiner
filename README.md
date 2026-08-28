@@ -116,6 +116,7 @@ Before the first production deployment, an operator must:
 - Protect the `production` branch in GitHub.
 - Create the Render service for this repository.
 - Store distinct, non-empty `COMBINE_BEARER_TOKEN` and `COMBINE_PROBE_TOKEN` values as Render environment secrets.
+- Store a `GITHUB_COPILOT_TOKEN` or `COPILOT_API_KEY` value as a Render environment secret. This is the credential the live `combinator-agent` uses at request time (distinct from `AGENT_BUILDER_DEPLOY_KEY`, which only grants build-time access to the private `agent-builder` source); without it, every real `/api/combine` request fails with "the combine agent failed to run" even though the deploy itself succeeds.
 - Configure GitHub Actions repository secrets: `RENDER_API_KEY`, `RENDER_SERVICE_ID`, `RENDER_EXTERNAL_URL`, a `COMBINE_PROBE_TOKEN` matching the value stored in Render, and `AGENT_BUILDER_DEPLOY_KEY` (a private key whose public half is whitelisted as a read-only deploy key on `mankinskin/agent-builder`).
 - In the Render service's *Environment* settings, add a **Secret File** named `agent_builder_ssh_key` containing that same private key's contents. Render builds its own Docker image server-side from this repo — it has no persistent host key to pre-whitelist and no `ssh-agent` socket to forward, so this Secret File is Render's equivalent of the `--ssh default` forwarding used locally and in CI. The Dockerfile mounts it at build time and points `git` at it directly; it is never baked into the image.
 

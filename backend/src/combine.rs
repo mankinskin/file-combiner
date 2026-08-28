@@ -341,6 +341,10 @@ async fn run_combine(
                 CombineAgentError::NoFileCreated => "the combine agent did not produce a file",
                 CombineAgentError::InvalidOutput(_) => "the combine agent produced an invalid file",
             };
+            // The raw detail may reference paths/config, so it goes only to
+            // the operator-facing tracing log — never into the redacted,
+            // client-readable diagnostics capability or HTTP response.
+            tracing::error!(request_id = %request_id, "combine agent failed: {error}");
             recorder.record("combine.failed", Level::Error, message);
             let capability = diagnostics.issue(&request_id, recorder.into_events());
             let mut response = error_response(ErrorCode::CombineFailed, message);
