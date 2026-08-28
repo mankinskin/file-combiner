@@ -25,7 +25,13 @@ COPY . .
 # configured Secret File as a Docker secret mount, and GIT_SSH_COMMAND points
 # git at that key file directly. Neither mount is required, so whichever
 # mechanism the caller didn't wire up is simply absent, not an error.
+#
+# The registry/git cache mounts persist across builds independent of image
+# layer caching, so a source change elsewhere never forces re-downloading
+# crates that haven't changed.
 RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     if [ -f /run/secrets/agent_builder_ssh_key ]; then \
       export GIT_SSH_COMMAND="ssh -i /run/secrets/agent_builder_ssh_key -o UserKnownHostsFile=/root/.ssh/known_hosts -o IdentitiesOnly=yes"; \
     fi && \
@@ -34,11 +40,17 @@ RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secre
 # CI target: `docker build --ssh default --target lint .`
 FROM deps AS lint
 RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,id=cargo-target-lint \
     cargo fmt -- --check && cargo clippy --workspace --all-targets -- -D warnings
 
 # CI target: `docker build --ssh default --target test .`
 FROM deps AS test
 RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,id=cargo-target-test \
     cargo test -p backend
 
 # CI target: `docker build --ssh default --target frontend-smoke .`
@@ -49,6 +61,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,id=cargo-target-frontend-smoke \
     if [ -f /run/secrets/agent_builder_ssh_key ]; then \
       export GIT_SSH_COMMAND="ssh -i /run/secrets/agent_builder_ssh_key -o UserKnownHostsFile=/root/.ssh/known_hosts -o IdentitiesOnly=yes"; \
     fi && \
@@ -60,10 +75,14 @@ RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secre
 # Production image target: `docker build --ssh default -t file-combiner .`
 FROM deps AS builder
 RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,id=cargo-target-builder \
     if [ -f /run/secrets/agent_builder_ssh_key ]; then \
       export GIT_SSH_COMMAND="ssh -i /run/secrets/agent_builder_ssh_key -o UserKnownHostsFile=/root/.ssh/known_hosts -o IdentitiesOnly=yes"; \
     fi && \
-    chmod +x ./build.sh && ./build.sh
+    chmod +x ./build.sh && ./build.sh && \
+    mkdir -p /app/dist && cp target/release/backend /app/dist/backend
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
@@ -71,7 +90,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/backend ./server
+COPY --from=builder /app/dist/backend ./server
 COPY --from=builder /app/frontend/dist ./frontend/dist
 COPY --from=builder /app/backend/assets ./assets
 

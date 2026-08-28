@@ -29,6 +29,8 @@ jobs:
           context: .
           target: lint
           ssh: default=${{ env.SSH_AUTH_SOCK }}
+          cache-from: type=gha,scope=lint
+          cache-to: type=gha,mode=max,scope=lint
 
   backend-contract:
     runs-on: ubuntu-latest
@@ -46,6 +48,8 @@ jobs:
           context: .
           target: test
           ssh: default=${{ env.SSH_AUTH_SOCK }}
+          cache-from: type=gha,scope=test
+          cache-to: type=gha,mode=max,scope=test
 
   frontend-browser:
     runs-on: ubuntu-latest
@@ -63,6 +67,8 @@ jobs:
           context: .
           target: frontend-smoke
           ssh: default=${{ env.SSH_AUTH_SOCK }}
+          cache-from: type=gha,scope=frontend-smoke
+          cache-to: type=gha,mode=max,scope=frontend-smoke
 
   container-api:
     runs-on: ubuntu-latest
@@ -81,6 +87,8 @@ jobs:
           tags: file-combiner:local
           load: true
           ssh: default=${{ env.SSH_AUTH_SOCK }}
+          cache-from: type=gha,scope=container-api
+          cache-to: type=gha,mode=max,scope=container-api
       - name: Container smoke test
         run: bash scripts/smoke-container.sh file-combiner:local test-group-token test-probe-token
 
