@@ -72,12 +72,11 @@ pub trait CombineAgentBackend: Send + Sync {
     ) -> BoxFuture<'a, Result<PathBuf, CombineAgentError>>;
 }
 
+/// Presents the two attached files as data only. Every instruction on what
+/// to do with them belongs solely to the template's preamble, never here.
 fn build_prompt(request: &CombineRequest) -> String {
     format!(
-        "Combine the two attached files by writing the first file's contents, \
-         a newline, then the second file's contents, using the write tool to \
-         create the combined file. Do not summarize or alter the content.\n\n\
-         Attached file: {}\n--- BEGIN FILE ---\n{}\n--- END FILE ---\n\n\
+        "Attached file: {}\n--- BEGIN FILE ---\n{}\n--- END FILE ---\n\n\
          Attached file: {}\n--- BEGIN FILE ---\n{}\n--- END FILE ---",
         request.first_name, request.first_contents, request.second_name, request.second_contents,
     )
