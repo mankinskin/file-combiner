@@ -30,6 +30,8 @@ pub enum ErrorCode {
     FileTooLarge,
     RequestTimeout,
     ServiceBusy,
+    CombineFailed,
+    NotFound,
 }
 
 impl ErrorCode {
@@ -45,6 +47,8 @@ impl ErrorCode {
             ErrorCode::FileTooLarge => "file_too_large",
             ErrorCode::RequestTimeout => "request_timeout",
             ErrorCode::ServiceBusy => "service_busy",
+            ErrorCode::CombineFailed => "combine_failed",
+            ErrorCode::NotFound => "not_found",
         }
     }
 
@@ -59,6 +63,8 @@ impl ErrorCode {
             ErrorCode::PayloadTooLarge | ErrorCode::FileTooLarge => 413,
             ErrorCode::RequestTimeout => 408,
             ErrorCode::ServiceBusy => 429,
+            ErrorCode::CombineFailed => 502,
+            ErrorCode::NotFound => 404,
         }
     }
 }
@@ -106,6 +112,8 @@ mod tests {
             (ErrorCode::FileTooLarge, 413),
             (ErrorCode::RequestTimeout, 408),
             (ErrorCode::ServiceBusy, 429),
+            (ErrorCode::CombineFailed, 502),
+            (ErrorCode::NotFound, 404),
         ];
         for (code, status) in expected {
             assert_eq!(code.status(), status, "{code:?}");

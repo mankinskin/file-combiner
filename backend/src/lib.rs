@@ -1,6 +1,8 @@
+pub mod combinator_agent;
 pub mod combine;
 pub mod config;
 pub mod contract;
+pub mod diagnostics;
 
 use axum::{routing::get, Router};
 pub use combine::AppState;
@@ -31,7 +33,11 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state() -> AppState {
-        AppState::new("bearer-token".to_string(), "probe-token".to_string())
+        AppState::new(
+            "bearer-token".to_string(),
+            "probe-token".to_string(),
+            std::sync::Arc::new(combinator_agent::FakeCombineBackend),
+        )
     }
 
     #[tokio::test]

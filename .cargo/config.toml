@@ -1,0 +1,5 @@
+[net]
+# The private `agent-builder` Git dependency is fetched over SSH; Cargo's
+# bundled libssh2 backend rejects some modern host-key/algorithm
+# combinations, so shell out to the system `git` (and its ssh-agent) instead.
+git-fetch-with-cli = true

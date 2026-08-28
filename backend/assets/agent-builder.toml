@@ -1,0 +1,5 @@
+template_dir = "templates"
+template = "combinator-agent.md"
+file_root = "."
+ticket_workspace = "."
+ticket_mcp_command = "true"

@@ -12,62 +12,75 @@ defaults:
   run:
     shell: bash
 
-env:
-  RUST_TOOLCHAIN: "1.90.0"
-  TRUNK_VERSION: "0.21.14"
-  NODE_VERSION: "22.14.0"
-
 jobs:
   rust-quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install "${RUST_TOOLCHAIN}"
-          rustup component add rustfmt clippy --toolchain "${RUST_TOOLCHAIN}"
-          rustup default "${RUST_TOOLCHAIN}"
-      - name: cargo fmt --check
-        run: cargo fmt -- --check
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Load agent-builder deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AGENT_BUILDER_DEPLOY_KEY }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: cargo fmt --check && cargo clippy
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: lint
+          ssh: default=${{ env.SSH_AUTH_SOCK }}
 
   backend-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        run: rustup toolchain install "${RUST_TOOLCHAIN}" && rustup default "${RUST_TOOLCHAIN}"
+      - name: Load agent-builder deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AGENT_BUILDER_DEPLOY_KEY }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
       - name: cargo test -p backend
-        run: cargo test -p backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: test
+          ssh: default=${{ env.SSH_AUTH_SOCK }}
 
   frontend-browser:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Load agent-builder deploy key
+        uses: webfactory/ssh-agent@v0.9.0
         with:
-          node-version: "22.14.0"
-      - name: Install Rust toolchain and wasm target
-        run: |
-          rustup toolchain install "${RUST_TOOLCHAIN}"
-          rustup target add wasm32-unknown-unknown --toolchain "${RUST_TOOLCHAIN}"
-          rustup default "${RUST_TOOLCHAIN}"
-      - name: Install trunk
-        run: cargo install trunk --version "${TRUNK_VERSION}" --locked
-      - name: Install e2e dependencies
-        run: npm ci --prefix frontend/e2e
-      - name: Install Playwright browser
-        run: npx --prefix frontend/e2e playwright install --with-deps chromium
+          ssh-private-key: ${{ secrets.AGENT_BUILDER_DEPLOY_KEY }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
       - name: Build frontend and run browser smoke
-        run: bash scripts/smoke-browser.sh test-group-token
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: frontend-smoke
+          ssh: default=${{ env.SSH_AUTH_SOCK }}
 
   container-api:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Load agent-builder deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AGENT_BUILDER_DEPLOY_KEY }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
       - name: Build image
-        run: docker build -t file-combiner:local .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: file-combiner:local
+          load: true
+          ssh: default=${{ env.SSH_AUTH_SOCK }}
       - name: Container smoke test
         run: bash scripts/smoke-container.sh file-combiner:local test-group-token test-probe-token
 

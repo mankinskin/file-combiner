@@ -1,39 +1,54 @@
 //! The authenticated `/api/combine` endpoint: bounded, in-memory multipart handling.
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::multipart::MultipartRejection;
-use axum::extract::{Multipart, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::{Multipart, Path as AxumPath, State};
+use axum::http::{header, HeaderMap, HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
+use crate::combinator_agent::{CombineAgentBackend, CombineAgentError, CombineRequest};
 use crate::contract::{
     ErrorBody, ErrorCode, MAX_CONCURRENT_COMBINES, MAX_FILE_BYTES, MAX_PART_HEADER_BYTES,
     MAX_REQUEST_BYTES, REQUEST_TIMEOUT_SECS, REQUIRED_FILE_PARTS,
 };
+use crate::diagnostics::{DiagnosticEvent, DiagnosticsStore, Level};
 
 /// Header a caller must send, alongside `COMBINE_PROBE_TOKEN`, to use the
 /// internal probe path. The browser UI never sends this header.
 pub const PROBE_HEADER: &str = "x-combine-probe";
+/// Response header carrying the opaque diagnostics capability for a combine
+/// request, once one has been issued.
+pub const DIAGNOSTICS_CAPABILITY_HEADER: &str = "x-diagnostics-capability";
 
 #[derive(Clone)]
 pub struct AppState {
     bearer_token: Arc<str>,
     probe_token: Arc<str>,
     combine_slots: Arc<Semaphore>,
+    backend: Arc<dyn CombineAgentBackend>,
+    diagnostics: DiagnosticsStore,
 }
 
 impl AppState {
-    pub fn new(bearer_token: String, probe_token: String) -> Self {
+    pub fn new(
+        bearer_token: String,
+        probe_token: String,
+        backend: Arc<dyn CombineAgentBackend>,
+    ) -> Self {
         AppState {
             bearer_token: bearer_token.into(),
             probe_token: probe_token.into(),
             combine_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_COMBINES)),
+            backend,
+            diagnostics: DiagnosticsStore::new(),
         }
     }
 
@@ -44,10 +59,69 @@ impl AppState {
     }
 }
 
+/// A fresh, request-scoped temporary directory. Its contents (staged
+/// uploads and any agent-created output) are removed when the guard drops,
+/// which covers success, failure, timeout cancellation, and disconnect.
+struct RequestDir(PathBuf);
+
+impl RequestDir {
+    fn create() -> std::io::Result<Self> {
+        let unique = format!(
+            "{}-{:?}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            std::thread::current().id(),
+        );
+        let dir = std::env::temp_dir().join(format!("file-combiner-{unique}"));
+        fs::create_dir_all(&dir)?;
+        Ok(Self(dir))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// The directory's unique basename, reused as the diagnostics
+    /// correlation id for this request.
+    fn id(&self) -> &str {
+        self.0
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown-request")
+    }
+}
+
+impl Drop for RequestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 pub fn routes(state: AppState) -> Router {
     Router::new()
         .route("/api/combine", post(combine))
+        .route("/api/diagnostics/:capability", get(diagnostics))
         .with_state(state)
+}
+
+/// Returns bounded, redacted diagnostics for one combine request. Requires
+/// the same shared bearer as `/api/combine`; an unknown, expired, or
+/// already-cleaned capability is indistinguishable from an unknown one.
+async fn diagnostics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(capability): AxumPath<String>,
+) -> Response {
+    if let Some(response) = authorize(&state, &headers) {
+        return response;
+    }
+
+    match state.diagnostics.retrieve(&capability) {
+        Some(diagnostics) => (StatusCode::OK, Json(diagnostics)).into_response(),
+        None => error_response(ErrorCode::NotFound, "diagnostics not found"),
+    }
 }
 
 fn error_response(code: ErrorCode, message: &str) -> Response {
@@ -116,7 +190,7 @@ async fn combine(
         Err(_) => return error_response(ErrorCode::ServiceBusy, "too many concurrent requests"),
     };
 
-    run_with_deadline(permit, run_combine(multipart)).await
+    run_with_deadline(permit, run_combine(multipart, state.backend.clone(), state.diagnostics.clone())).await
 }
 
 /// Runs `op` under the request deadline while holding `permit`. Extracted so
@@ -134,8 +208,17 @@ where
     response
 }
 
-async fn run_combine(mut multipart: Multipart) -> Response {
-    let mut files: Vec<String> = Vec::with_capacity(REQUIRED_FILE_PARTS);
+struct UploadedFile {
+    name: String,
+    contents: String,
+}
+
+async fn run_combine(
+    mut multipart: Multipart,
+    backend: Arc<dyn CombineAgentBackend>,
+    diagnostics: DiagnosticsStore,
+) -> Response {
+    let mut files: Vec<UploadedFile> = Vec::with_capacity(REQUIRED_FILE_PARTS);
     let mut total_bytes: u64 = 0;
 
     loop {
@@ -154,9 +237,9 @@ async fn run_combine(mut multipart: Multipart) -> Response {
             return error_response(ErrorCode::MetadataTooLarge, "part metadata too large");
         }
 
-        if field.file_name().is_none() {
+        let Some(file_name) = field.file_name().map(str::to_owned) else {
             return error_response(ErrorCode::NonFileField, "only file parts are accepted");
-        }
+        };
 
         if files.len() >= REQUIRED_FILE_PARTS {
             return error_response(ErrorCode::WrongFileCount, "exactly two files are required");
@@ -193,7 +276,10 @@ async fn run_combine(mut multipart: Multipart) -> Response {
         }
 
         match String::from_utf8(buffer) {
-            Ok(text) => files.push(text),
+            Ok(contents) => files.push(UploadedFile {
+                name: file_name,
+                contents,
+            }),
             Err(_) => {
                 return error_response(ErrorCode::InvalidTextEncoding, "file is not valid UTF-8")
             }
@@ -204,8 +290,93 @@ async fn run_combine(mut multipart: Multipart) -> Response {
         return error_response(ErrorCode::WrongFileCount, "exactly two files are required");
     }
 
-    let combined = format!("{}\n{}", files[0], files[1]);
-    Response::builder()
+    let request_dir = match RequestDir::create() {
+        Ok(dir) => dir,
+        Err(_) => return error_response(ErrorCode::CombineFailed, "failed to stage the request"),
+    };
+    let request_id = request_dir.id().to_owned();
+
+    let mut events = vec![DiagnosticEvent::new(
+        &request_id,
+        "combine.received",
+        Level::Info,
+        format!(
+            "received {} files totaling {total_bytes} bytes",
+            REQUIRED_FILE_PARTS
+        ),
+    )];
+
+    let combine_request = CombineRequest {
+        first_name: files[0].name.clone(),
+        first_contents: files[0].contents.clone(),
+        second_name: files[1].name.clone(),
+        second_contents: files[1].contents.clone(),
+    };
+
+    events.push(DiagnosticEvent::new(
+        &request_id,
+        "combine.agent_invoked",
+        Level::Info,
+        "invoking the combinator agent",
+    ));
+
+    let combined_path = match backend.combine(request_dir.path(), &combine_request).await {
+        Ok(path) => {
+            events.push(DiagnosticEvent::new(
+                &request_id,
+                "combine.completed",
+                Level::Info,
+                "combinator agent produced a validated file",
+            ));
+            path
+        }
+        Err(error) => {
+            let message = match error {
+                CombineAgentError::Execution(_) => "the combine agent failed to run",
+                CombineAgentError::NoFileCreated => "the combine agent did not produce a file",
+                CombineAgentError::InvalidOutput(_) => "the combine agent produced an invalid file",
+            };
+            events.push(DiagnosticEvent::new(
+                &request_id,
+                "combine.failed",
+                Level::Error,
+                message,
+            ));
+            let capability = diagnostics.issue(&request_id, events);
+            let mut response = error_response(ErrorCode::CombineFailed, message);
+            insert_capability_header(&mut response, &capability);
+            return response;
+        }
+    };
+
+    let combined = match fs::read(&combined_path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            events.push(DiagnosticEvent::new(
+                &request_id,
+                "combine.failed",
+                Level::Error,
+                "failed to read the combined file",
+            ));
+            let capability = diagnostics.issue(&request_id, events);
+            let mut response = error_response(ErrorCode::CombineFailed, "failed to read combined file");
+            insert_capability_header(&mut response, &capability);
+            return response;
+        }
+    };
+    // `request_dir` drops here, deleting staged uploads and the created
+    // file now that its bytes are already read into the response body.
+    drop(request_dir);
+
+    events.push(DiagnosticEvent::new(
+        &request_id,
+        "combine.response_returned",
+        Level::Info,
+        "returning the combined file to the caller",
+    ));
+    let capability = diagnostics.issue(&request_id, events);
+
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(
@@ -213,19 +384,39 @@ async fn run_combine(mut multipart: Multipart) -> Response {
             "attachment; filename=\"combined.txt\"",
         )
         .body(Body::from(combined))
-        .expect("response with well-formed static headers")
+        .expect("response with well-formed static headers");
+    insert_capability_header(&mut response, &capability);
+    response
+}
+
+fn insert_capability_header(response: &mut Response, capability: &str) {
+    if let Ok(value) = capability.parse() {
+        response.headers_mut().insert(
+            HeaderName::from_static(DIAGNOSTICS_CAPABILITY_HEADER),
+            value,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::combinator_agent::FakeCombineBackend;
+
+    fn test_state() -> AppState {
+        AppState::new(
+            "token".to_string(),
+            "probe".to_string(),
+            Arc::new(FakeCombineBackend),
+        )
+    }
 
     /// Exercises the actual timeout branch: an operation that never
     /// resolves must be aborted once the deadline elapses, independent of
     /// wall-clock time.
     #[tokio::test(start_paused = true)]
     async fn deadline_returns_request_timeout_response() {
-        let state = AppState::new("token".to_string(), "probe".to_string());
+        let state = test_state();
         let permit = state
             .combine_slots
             .clone()
@@ -239,3 +430,4 @@ mod tests {
         assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
     }
 }
+
