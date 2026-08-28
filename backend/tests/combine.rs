@@ -373,7 +373,11 @@ async fn combine_issues_diagnostics_capability_with_structured_redacted_records(
         .to_str()
         .unwrap()
         .to_owned();
-    assert_eq!(capability.len(), 64, "capability must be a 256-bit hex token");
+    assert_eq!(
+        capability.len(),
+        64,
+        "capability must be a 256-bit hex token"
+    );
 
     // Repeat reads within the TTL succeed and return the same records.
     for _ in 0..2 {
@@ -394,8 +398,14 @@ async fn combine_issues_diagnostics_capability_with_structured_redacted_records(
             assert!(object.contains_key("level"));
             assert!(object.contains_key("timestamp_ms"));
             let message = object.get("message").unwrap().as_str().unwrap();
-            assert!(!message.contains("hello"), "message must not contain upload content");
-            assert!(!message.contains("world"), "message must not contain upload content");
+            assert!(
+                !message.contains("hello"),
+                "message must not contain upload content"
+            );
+            assert!(
+                !message.contains("world"),
+                "message must not contain upload content"
+            );
             assert!(!message.contains(BEARER_TOKEN));
             assert!(!message.contains(PROBE_TOKEN));
         }
@@ -429,4 +439,3 @@ async fn combine_issues_diagnostics_capability_with_structured_redacted_records(
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
-

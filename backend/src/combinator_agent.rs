@@ -41,10 +41,7 @@ pub enum CombineAgentError {
 }
 
 impl fmt::Display for CombineAgentError {
-    fn fmt(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CombineAgentError::Execution(message) => write!(f, "agent execution failed: {message}"),
             CombineAgentError::NoFileCreated => {
@@ -88,10 +85,7 @@ fn build_prompt(request: &CombineRequest) -> String {
 struct CreatedFile(Arc<Mutex<Option<PathBuf>>>);
 
 impl CreatedFile {
-    fn set(
-        &self,
-        path: PathBuf,
-    ) {
+    fn set(&self, path: PathBuf) {
         *self.0.lock().unwrap() = Some(path);
     }
 
@@ -114,17 +108,11 @@ struct WriteCombinedFileTool {
 }
 
 impl WriteCombinedFileTool {
-    fn new(
-        dir: PathBuf,
-        created: CreatedFile,
-    ) -> Self {
+    fn new(dir: PathBuf, created: CreatedFile) -> Self {
         Self { dir, created }
     }
 
-    async fn write(
-        &self,
-        content: &str,
-    ) -> std::io::Result<String> {
+    async fn write(&self, content: &str) -> std::io::Result<String> {
         if content.len() > MAX_OUTPUT_BYTES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -144,7 +132,10 @@ impl WriteCombinedFileTool {
         let path = self.dir.join(&filename);
 
         // Atomic create-new: refuses to overwrite an existing path.
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&path)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
         file.write_all(content.as_bytes())?;
         drop(file);
 
@@ -174,22 +165,18 @@ impl rig::tool::Tool for WriteCombinedFileTool {
         })
     }
 
-    fn call(
+    async fn call(
         &self,
         _context: &mut rig::tool::ToolContext,
         args: Self::Args,
-    ) -> impl std::future::Future<Output = std::result::Result<Self::Output, Self::Error>> + Send
-    {
-        async move { self.write(&args.content).await }
+    ) -> std::result::Result<Self::Output, Self::Error> {
+        self.write(&args.content).await
     }
 }
 
 /// Validates that `path` is a regular, non-symlink file contained in `dir`
 /// and within the output size limit, then returns its canonical form.
-fn validate_created_file(
-    dir: &Path,
-    path: &Path,
-) -> Result<PathBuf, CombineAgentError> {
+fn validate_created_file(dir: &Path, path: &Path) -> Result<PathBuf, CombineAgentError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| CombineAgentError::InvalidOutput(error.to_string()))?;
     if !metadata.is_file() {
@@ -215,8 +202,9 @@ fn validate_created_file(
         ));
     }
 
-    fs::read_to_string(&canonical_path)
-        .map_err(|_| CombineAgentError::InvalidOutput("created file is not valid UTF-8".to_owned()))?;
+    fs::read_to_string(&canonical_path).map_err(|_| {
+        CombineAgentError::InvalidOutput("created file is not valid UTF-8".to_owned())
+    })?;
 
     Ok(canonical_path)
 }
@@ -230,10 +218,7 @@ pub struct RigCombineBackend {
 }
 
 impl RigCombineBackend {
-    pub fn new(
-        config: AgentConfig,
-        template: AgentTemplate,
-    ) -> Self {
+    pub fn new(config: AgentConfig, template: AgentTemplate) -> Self {
         Self { config, template }
     }
 }
@@ -248,11 +233,12 @@ impl CombineAgentBackend for RigCombineBackend {
             let created = CreatedFile::default();
             let tool = WriteCombinedFileTool::new(dir.to_path_buf(), created.clone());
 
-            let executor = RigAgentExecutor::from_template(&self.config, &self.template, |server| {
-                server.tool(tool)
-            })
-            .await
-            .map_err(|error| CombineAgentError::Execution(error.to_string()))?;
+            let executor =
+                RigAgentExecutor::from_template(&self.config, &self.template, |server| {
+                    server.tool(tool)
+                })
+                .await
+                .map_err(|error| CombineAgentError::Execution(error.to_string()))?;
 
             executor
                 .execute(AgentRequest::new(build_prompt(request), 10))
@@ -296,12 +282,17 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{CombineAgentBackend, CombineRequest, CreatedFile, FakeCombineBackend, WriteCombinedFileTool};
+    use super::{
+        CombineAgentBackend, CombineRequest, CreatedFile, FakeCombineBackend, WriteCombinedFileTool,
+    };
 
     fn fresh_dir() -> std::path::PathBuf {
         let unique = format!(
             "{}-{:?}",
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
             std::thread::current().id(),
         );
         let dir = std::env::temp_dir().join(format!("combinator-agent-test-{unique}"));

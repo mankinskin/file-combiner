@@ -14,20 +14,23 @@ async fn main() {
     });
 
     let assets_dir = std::path::Path::new(&config.assets_dir);
-    let agent_config = AgentConfig::load(&assets_dir.join("agent-builder.toml"))
-        .unwrap_or_else(|err| {
+    let agent_config =
+        AgentConfig::load(&assets_dir.join("agent-builder.toml")).unwrap_or_else(|err| {
             eprintln!("combinator-agent configuration error: {err}");
             std::process::exit(1);
         });
-    let agent_template =
-        AgentTemplate::load(&agent_config.template_path()).unwrap_or_else(|err| {
-            eprintln!("combinator-agent template error: {err}");
-            std::process::exit(1);
-        });
+    let agent_template = AgentTemplate::load(&agent_config.template_path()).unwrap_or_else(|err| {
+        eprintln!("combinator-agent template error: {err}");
+        std::process::exit(1);
+    });
     let backend: Arc<dyn backend::combinator_agent::CombineAgentBackend> =
         Arc::new(RigCombineBackend::new(agent_config, agent_template));
 
-    let state = AppState::new(config.bearer_token.clone(), config.probe_token.clone(), backend);
+    let state = AppState::new(
+        config.bearer_token.clone(),
+        config.probe_token.clone(),
+        backend,
+    );
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -37,4 +40,3 @@ async fn main() {
         .await
         .unwrap();
 }
-

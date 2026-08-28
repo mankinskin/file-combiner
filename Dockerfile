@@ -54,6 +54,7 @@ RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secre
     fi && \
     npm ci --prefix frontend/e2e && \
     npx --prefix frontend/e2e playwright install --with-deps chromium && \
+    cargo build -p backend && \
     bash scripts/smoke-browser.sh ci-smoke-token
 
 # Production image target: `docker build --ssh default -t file-combiner .`

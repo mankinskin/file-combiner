@@ -71,10 +71,15 @@ fn redact(message: &str) -> String {
 }
 
 fn secret_env_values() -> Vec<String> {
-    ["COMBINE_BEARER_TOKEN", "COMBINE_PROBE_TOKEN", "GITHUB_COPILOT_TOKEN", "COPILOT_API_KEY"]
-        .into_iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .collect()
+    [
+        "COMBINE_BEARER_TOKEN",
+        "COMBINE_PROBE_TOKEN",
+        "GITHUB_COPILOT_TOKEN",
+        "COPILOT_API_KEY",
+    ]
+    .into_iter()
+    .filter_map(|name| std::env::var(name).ok())
+    .collect()
 }
 
 /// The bounded, possibly-truncated event set returned for one request.
@@ -201,28 +206,49 @@ mod tests {
     #[test]
     fn bound_events_marks_truncation_past_the_event_limit() {
         let events: Vec<_> = (0..MAX_EVENTS + 5)
-            .map(|i| DiagnosticEvent::new("req-1", "combine.received", Level::Info, format!("event {i}")))
+            .map(|i| {
+                DiagnosticEvent::new(
+                    "req-1",
+                    "combine.received",
+                    Level::Info,
+                    format!("event {i}"),
+                )
+            })
             .collect();
 
         let diagnostics = bound_events("req-1", events);
 
         assert!(diagnostics.truncated);
         assert!(diagnostics.events.len() <= MAX_EVENTS + 1);
-        assert_eq!(diagnostics.events.last().unwrap().kind, "diagnostics.truncated");
+        assert_eq!(
+            diagnostics.events.last().unwrap().kind,
+            "diagnostics.truncated"
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn issued_capability_supports_repeat_reads_then_expires() {
         let store = DiagnosticsStore::new();
-        let events = vec![DiagnosticEvent::new("req-1", "combine.completed", Level::Info, "ok")];
+        let events = vec![DiagnosticEvent::new(
+            "req-1",
+            "combine.completed",
+            Level::Info,
+            "ok",
+        )];
         let capability = store.issue("req-1", events);
 
         assert!(store.retrieve(&capability).is_some());
-        assert!(store.retrieve(&capability).is_some(), "repeat reads must succeed within the TTL");
+        assert!(
+            store.retrieve(&capability).is_some(),
+            "repeat reads must succeed within the TTL"
+        );
 
         tokio::time::advance(CAPABILITY_TTL + Duration::from_secs(1)).await;
 
-        assert!(store.retrieve(&capability).is_none(), "capability must expire after the TTL");
+        assert!(
+            store.retrieve(&capability).is_none(),
+            "capability must expire after the TTL"
+        );
     }
 
     #[test]

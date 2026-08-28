@@ -94,8 +94,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_bearer_token() {
-        let err =
-            AppConfig::from_values(None, Some("probe".into()), None, None, None).unwrap_err();
+        let err = AppConfig::from_values(None, Some("probe".into()), None, None, None).unwrap_err();
         assert_eq!(err, ConfigError::MissingBearerToken);
     }
 
@@ -137,9 +136,14 @@ mod tests {
 
     #[test]
     fn accepts_valid_distinct_tokens_and_defaults_port_and_static_dir() {
-        let config =
-            AppConfig::from_values(Some("bearer".into()), Some("probe".into()), None, None, None)
-                .unwrap();
+        let config = AppConfig::from_values(
+            Some("bearer".into()),
+            Some("probe".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(config.bearer_token, "bearer");
         assert_eq!(config.probe_token, "probe");
         assert_eq!(config.port, 8080);

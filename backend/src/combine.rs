@@ -190,7 +190,11 @@ async fn combine(
         Err(_) => return error_response(ErrorCode::ServiceBusy, "too many concurrent requests"),
     };
 
-    run_with_deadline(permit, run_combine(multipart, state.backend.clone(), state.diagnostics.clone())).await
+    run_with_deadline(
+        permit,
+        run_combine(multipart, state.backend.clone(), state.diagnostics.clone()),
+    )
+    .await
 }
 
 /// Runs `op` under the request deadline while holding `permit`. Extracted so
@@ -359,7 +363,8 @@ async fn run_combine(
                 "failed to read the combined file",
             ));
             let capability = diagnostics.issue(&request_id, events);
-            let mut response = error_response(ErrorCode::CombineFailed, "failed to read combined file");
+            let mut response =
+                error_response(ErrorCode::CombineFailed, "failed to read combined file");
             insert_capability_header(&mut response, &capability);
             return response;
         }
@@ -430,4 +435,3 @@ mod tests {
         assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
     }
 }
-
