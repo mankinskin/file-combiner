@@ -82,6 +82,45 @@ fn secret_env_values() -> Vec<String> {
     .collect()
 }
 
+/// Accumulates one request's diagnostic events as they happen. Every
+/// recorded event is also emitted through `tracing`, so the same lifecycle
+/// is visible on the terminal (subject to `RUST_LOG`) as well as through the
+/// capability-gated `/api/diagnostics/:capability` read path.
+pub struct DiagnosticsRecorder<'a> {
+    request_id: &'a str,
+    events: Mutex<Vec<DiagnosticEvent>>,
+}
+
+impl<'a> DiagnosticsRecorder<'a> {
+    pub fn new(request_id: &'a str) -> Self {
+        Self {
+            request_id,
+            events: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn record(&self, kind: &'static str, level: Level, message: impl Into<String>) {
+        let message = message.into();
+        let request_id = self.request_id;
+        match level {
+            Level::Info => tracing::info!(request_id, kind, "{message}"),
+            Level::Warn => tracing::warn!(request_id, kind, "{message}"),
+            Level::Error => tracing::error!(request_id, kind, "{message}"),
+        }
+        self.events.lock().unwrap().push(DiagnosticEvent::new(
+            self.request_id,
+            kind,
+            level,
+            message,
+        ));
+    }
+
+    /// Consumes the recorder, returning its events for storage.
+    pub fn into_events(self) -> Vec<DiagnosticEvent> {
+        self.events.into_inner().unwrap()
+    }
+}
+
 /// The bounded, possibly-truncated event set returned for one request.
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestDiagnostics {

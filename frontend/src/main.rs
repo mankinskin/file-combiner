@@ -9,9 +9,28 @@ use web_sys::{
 
 /// Must match `backend::contract::MAX_FILE_BYTES`.
 const MAX_FILE_BYTES: u64 = 1_048_576;
+/// Must match `backend::combine::DIAGNOSTICS_CAPABILITY_HEADER`.
+const DIAGNOSTICS_CAPABILITY_HEADER: &str = "x-diagnostics-capability";
 
 fn main() {
     dioxus::launch(App);
+}
+
+/// Mirrors `backend::diagnostics::DiagnosticEvent`'s wire shape (minus
+/// `request_id`, which the UI has no use for).
+#[derive(Clone, PartialEq, serde::Deserialize)]
+struct DiagnosticEventView {
+    kind: String,
+    level: String,
+    timestamp_ms: u64,
+    message: String,
+}
+
+/// Mirrors `backend::diagnostics::RequestDiagnostics`.
+#[derive(Clone, PartialEq, serde::Deserialize)]
+struct DiagnosticsView {
+    events: Vec<DiagnosticEventView>,
+    truncated: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -134,6 +153,7 @@ fn App() -> Element {
     let mut first_file = use_signal(|| Option::<SelectedFile>::None);
     let mut second_file = use_signal(|| Option::<SelectedFile>::None);
     let mut state = use_signal(|| RequestState::Idle);
+    let mut diagnostics = use_signal(|| Option::<DiagnosticsView>::None);
 
     let busy = matches!(*state.read(), RequestState::Submitting(_));
     let can_submit = !token.read().is_empty()
@@ -154,7 +174,9 @@ fn App() -> Element {
             state.set(RequestState::Submitting(Stage::FileReading));
             state.set(RequestState::Submitting(Stage::Combining));
             next_frame().await;
-            match submit_combine(&token_value, &first, &second).await {
+            diagnostics.set(None);
+            let (result, capability) = submit_combine(&token_value, &first, &second).await;
+            match result {
                 Ok(bytes) => {
                     state.set(RequestState::Submitting(Stage::PreparingDownload));
                     match std::str::from_utf8(&bytes) {
@@ -171,6 +193,11 @@ fn App() -> Element {
                 }
                 Err(message) => state.set(RequestState::Failed(message)),
             }
+            if let Some(capability) = capability {
+                if let Ok(fetched) = fetch_diagnostics(&token_value, &capability).await {
+                    diagnostics.set(Some(fetched));
+                }
+            }
         });
     };
 
@@ -179,6 +206,7 @@ fn App() -> Element {
         first_file.set(None);
         second_file.set(None);
         state.set(RequestState::Idle);
+        diagnostics.set(None);
         clear_file_input("first-file");
         clear_file_input("second-file");
         focus_element("token-input");
@@ -192,6 +220,7 @@ fn App() -> Element {
         first_file.set(None);
         second_file.set(None);
         state.set(RequestState::Idle);
+        diagnostics.set(None);
         clear_file_input("first-file");
         clear_file_input("second-file");
     };
@@ -267,6 +296,22 @@ fn App() -> Element {
                         pre { "{result.preview}" }
                     }
                     button { class: "primary", onclick: on_download, "Download combined.txt" }
+                }
+            }
+            if let Some(view) = diagnostics.read().clone() {
+                section { class: "diagnostics-panel", role: "region", "aria-label": "Diagnostics",
+                    h2 { "Diagnostics" }
+                    if view.truncated {
+                        p { class: "diagnostics-truncated", "Some records were dropped to stay within retention limits." }
+                    }
+                    ul {
+                        for event in view.events {
+                            li { class: "diagnostics-event level-{event.level}",
+                                span { class: "diagnostics-kind", "{event.kind}" }
+                                span { class: "diagnostics-message", "{event.message}" }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -355,15 +400,26 @@ async fn submit_combine(
     token: &str,
     first: &SelectedFile,
     second: &SelectedFile,
-) -> Result<Vec<u8>, String> {
-    let form = WebFormData::new().map_err(|_| "Failed to build the request".to_string())?;
-    append_file(&form, "first", first)?;
-    append_file(&form, "second", second)?;
+) -> (Result<Vec<u8>, String>, Option<String>) {
+    match submit_combine_inner(token, first, second).await {
+        Ok((bytes, capability)) => (Ok(bytes), capability),
+        Err((message, capability)) => (Err(message), capability),
+    }
+}
 
-    let headers = Headers::new().map_err(|_| "Failed to build the request".to_string())?;
+async fn submit_combine_inner(
+    token: &str,
+    first: &SelectedFile,
+    second: &SelectedFile,
+) -> Result<(Vec<u8>, Option<String>), (String, Option<String>)> {
+    let form = WebFormData::new().map_err(|_| ("Failed to build the request".to_string(), None))?;
+    append_file(&form, "first", first).map_err(|message| (message, None))?;
+    append_file(&form, "second", second).map_err(|message| (message, None))?;
+
+    let headers = Headers::new().map_err(|_| ("Failed to build the request".to_string(), None))?;
     headers
         .set("Authorization", &format!("Bearer {token}"))
-        .map_err(|_| "Failed to build the request".to_string())?;
+        .map_err(|_| ("Failed to build the request".to_string(), None))?;
 
     let opts = RequestInit::new();
     opts.set_method("POST");
@@ -372,6 +428,68 @@ async fn submit_combine(
     opts.set_body(&form);
 
     let request = Request::new_with_str_and_init("/api/combine", &opts)
+        .map_err(|_| ("Failed to build the request".to_string(), None))?;
+
+    let window = web_sys::window().ok_or(("No browser window available".to_string(), None))?;
+    let response_value = JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|_| ("Network request failed".to_string(), None))?;
+    let response: WebResponse = response_value
+        .dyn_into()
+        .map_err(|_| ("Unexpected response".to_string(), None))?;
+
+    let capability = response
+        .headers()
+        .get(DIAGNOSTICS_CAPABILITY_HEADER)
+        .ok()
+        .flatten();
+
+    if response.ok() {
+        let buffer = JsFuture::from(response.array_buffer().map_err(|_| {
+            (
+                "Failed to read the response".to_string(),
+                capability.clone(),
+            )
+        })?)
+        .await
+        .map_err(|_| {
+            (
+                "Failed to read the response".to_string(),
+                capability.clone(),
+            )
+        })?;
+        Ok((Uint8Array::new(&buffer).to_vec(), capability))
+    } else {
+        let json = JsFuture::from(
+            response
+                .json()
+                .map_err(|_| ("Request failed".to_string(), capability.clone()))?,
+        )
+        .await
+        .map_err(|_| ("Request failed".to_string(), capability.clone()))?;
+        let message = Reflect::get(&json, &JsValue::from_str("message"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .unwrap_or_else(|| "Request failed".to_string());
+        Err((message, capability))
+    }
+}
+
+/// Fetches the diagnostics recorded for one combine request via its opaque
+/// capability, using the same bearer credential as the original request.
+async fn fetch_diagnostics(token: &str, capability: &str) -> Result<DiagnosticsView, String> {
+    let headers = Headers::new().map_err(|_| "Failed to build the request".to_string())?;
+    headers
+        .set("Authorization", &format!("Bearer {token}"))
+        .map_err(|_| "Failed to build the request".to_string())?;
+
+    let opts = RequestInit::new();
+    opts.set_method("GET");
+    opts.set_mode(RequestMode::SameOrigin);
+    opts.set_headers(&headers);
+
+    let url = format!("/api/diagnostics/{capability}");
+    let request = Request::new_with_str_and_init(&url, &opts)
         .map_err(|_| "Failed to build the request".to_string())?;
 
     let window = web_sys::window().ok_or("No browser window available")?;
@@ -382,25 +500,22 @@ async fn submit_combine(
         .dyn_into()
         .map_err(|_| "Unexpected response".to_string())?;
 
-    if response.ok() {
-        let buffer = JsFuture::from(
-            response
-                .array_buffer()
-                .map_err(|_| "Failed to read the response".to_string())?,
-        )
-        .await
-        .map_err(|_| "Failed to read the response".to_string())?;
-        Ok(Uint8Array::new(&buffer).to_vec())
-    } else {
-        let json = JsFuture::from(response.json().map_err(|_| "Request failed".to_string())?)
-            .await
-            .map_err(|_| "Request failed".to_string())?;
-        let message = Reflect::get(&json, &JsValue::from_str("message"))
-            .ok()
-            .and_then(|value| value.as_string())
-            .unwrap_or_else(|| "Request failed".to_string());
-        Err(message)
+    if !response.ok() {
+        return Err("Failed to load diagnostics".to_string());
     }
+
+    let text_value = JsFuture::from(
+        response
+            .text()
+            .map_err(|_| "Failed to read diagnostics".to_string())?,
+    )
+    .await
+    .map_err(|_| "Failed to read diagnostics".to_string())?;
+    let text = text_value
+        .as_string()
+        .ok_or_else(|| "Failed to read diagnostics".to_string())?;
+
+    serde_json::from_str(&text).map_err(|_| "Failed to parse diagnostics".to_string())
 }
 
 fn append_file(form: &WebFormData, field: &str, file: &SelectedFile) -> Result<(), String> {

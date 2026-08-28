@@ -19,6 +19,8 @@ use agent_builder::{
 };
 use serde::Deserialize;
 
+use crate::diagnostics::{DiagnosticsRecorder, Level};
+
 /// Maximum bytes the write tool accepts for a combined-file body.
 pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -66,6 +68,7 @@ pub trait CombineAgentBackend: Send + Sync {
         &'a self,
         dir: &'a Path,
         request: &'a CombineRequest,
+        diagnostics: &'a DiagnosticsRecorder<'a>,
     ) -> BoxFuture<'a, Result<PathBuf, CombineAgentError>>;
 }
 
@@ -209,6 +212,17 @@ fn validate_created_file(dir: &Path, path: &Path) -> Result<PathBuf, CombineAgen
     Ok(canonical_path)
 }
 
+/// Caps an individual reasoning-trace message so one verbose model response
+/// cannot alone exhaust a request's diagnostics retention budget.
+fn truncate_for_diagnostics(text: &str) -> String {
+    const MAX_CHARS: usize = 4000;
+    let mut truncated: String = text.chars().take(MAX_CHARS).collect();
+    if truncated.len() < text.len() {
+        truncated.push_str("\u{2026} [truncated]");
+    }
+    truncated
+}
+
 /// Production backend: builds a fresh Copilot-backed agent per request,
 /// authorizing only the request-scoped write tool on top of the template's
 /// statically authorized tools.
@@ -228,6 +242,7 @@ impl CombineAgentBackend for RigCombineBackend {
         &'a self,
         dir: &'a Path,
         request: &'a CombineRequest,
+        diagnostics: &'a DiagnosticsRecorder<'a>,
     ) -> BoxFuture<'a, Result<PathBuf, CombineAgentError>> {
         Box::pin(async move {
             let created = CreatedFile::default();
@@ -240,10 +255,16 @@ impl CombineAgentBackend for RigCombineBackend {
                 .await
                 .map_err(|error| CombineAgentError::Execution(error.to_string()))?;
 
-            executor
+            let response = executor
                 .execute(AgentRequest::new(build_prompt(request), 10))
                 .await
                 .map_err(|error| CombineAgentError::Execution(error.to_string()))?;
+
+            diagnostics.record(
+                "combine.agent_reasoning",
+                Level::Info,
+                truncate_for_diagnostics(&response.text),
+            );
 
             let created_path = created.get().ok_or(CombineAgentError::NoFileCreated)?;
             validate_created_file(dir, &created_path)
@@ -261,6 +282,7 @@ impl CombineAgentBackend for FakeCombineBackend {
         &'a self,
         dir: &'a Path,
         request: &'a CombineRequest,
+        diagnostics: &'a DiagnosticsRecorder<'a>,
     ) -> BoxFuture<'a, Result<PathBuf, CombineAgentError>> {
         Box::pin(async move {
             let created = CreatedFile::default();
@@ -269,6 +291,11 @@ impl CombineAgentBackend for FakeCombineBackend {
             tool.write(&content)
                 .await
                 .map_err(|error| CombineAgentError::InvalidOutput(error.to_string()))?;
+            diagnostics.record(
+                "combine.agent_reasoning",
+                Level::Info,
+                "fake backend: deterministic concatenation, no model was invoked",
+            );
             let created_path = created.get().ok_or(CombineAgentError::NoFileCreated)?;
             validate_created_file(dir, &created_path)
         })
@@ -285,6 +312,7 @@ mod tests {
     use super::{
         CombineAgentBackend, CombineRequest, CreatedFile, FakeCombineBackend, WriteCombinedFileTool,
     };
+    use crate::diagnostics::DiagnosticsRecorder;
 
     fn fresh_dir() -> std::path::PathBuf {
         let unique = format!(
@@ -339,7 +367,10 @@ mod tests {
             second_contents: "world".to_owned(),
         };
 
-        let path = backend.combine(&dir, &request).await.unwrap();
+        let path = backend
+            .combine(&dir, &request, &DiagnosticsRecorder::new("test-request"))
+            .await
+            .unwrap();
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello\nworld");
         fs::remove_dir_all(dir).unwrap();

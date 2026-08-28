@@ -19,7 +19,7 @@ use crate::contract::{
     ErrorBody, ErrorCode, MAX_CONCURRENT_COMBINES, MAX_FILE_BYTES, MAX_PART_HEADER_BYTES,
     MAX_REQUEST_BYTES, REQUEST_TIMEOUT_SECS, REQUIRED_FILE_PARTS,
 };
-use crate::diagnostics::{DiagnosticEvent, DiagnosticsStore, Level};
+use crate::diagnostics::{DiagnosticsRecorder, DiagnosticsStore, Level};
 
 /// Header a caller must send, alongside `COMBINE_PROBE_TOKEN`, to use the
 /// internal probe path. The browser UI never sends this header.
@@ -299,16 +299,16 @@ async fn run_combine(
         Err(_) => return error_response(ErrorCode::CombineFailed, "failed to stage the request"),
     };
     let request_id = request_dir.id().to_owned();
+    let recorder = DiagnosticsRecorder::new(&request_id);
 
-    let mut events = vec![DiagnosticEvent::new(
-        &request_id,
+    recorder.record(
         "combine.received",
         Level::Info,
         format!(
             "received {} files totaling {total_bytes} bytes",
             REQUIRED_FILE_PARTS
         ),
-    )];
+    );
 
     let combine_request = CombineRequest {
         first_name: files[0].name.clone(),
@@ -317,21 +317,22 @@ async fn run_combine(
         second_contents: files[1].contents.clone(),
     };
 
-    events.push(DiagnosticEvent::new(
-        &request_id,
+    recorder.record(
         "combine.agent_invoked",
         Level::Info,
         "invoking the combinator agent",
-    ));
+    );
 
-    let combined_path = match backend.combine(request_dir.path(), &combine_request).await {
+    let combined_path = match backend
+        .combine(request_dir.path(), &combine_request, &recorder)
+        .await
+    {
         Ok(path) => {
-            events.push(DiagnosticEvent::new(
-                &request_id,
+            recorder.record(
                 "combine.completed",
                 Level::Info,
                 "combinator agent produced a validated file",
-            ));
+            );
             path
         }
         Err(error) => {
@@ -340,13 +341,8 @@ async fn run_combine(
                 CombineAgentError::NoFileCreated => "the combine agent did not produce a file",
                 CombineAgentError::InvalidOutput(_) => "the combine agent produced an invalid file",
             };
-            events.push(DiagnosticEvent::new(
-                &request_id,
-                "combine.failed",
-                Level::Error,
-                message,
-            ));
-            let capability = diagnostics.issue(&request_id, events);
+            recorder.record("combine.failed", Level::Error, message);
+            let capability = diagnostics.issue(&request_id, recorder.into_events());
             let mut response = error_response(ErrorCode::CombineFailed, message);
             insert_capability_header(&mut response, &capability);
             return response;
@@ -356,13 +352,12 @@ async fn run_combine(
     let combined = match fs::read(&combined_path) {
         Ok(bytes) => bytes,
         Err(_) => {
-            events.push(DiagnosticEvent::new(
-                &request_id,
+            recorder.record(
                 "combine.failed",
                 Level::Error,
                 "failed to read the combined file",
-            ));
-            let capability = diagnostics.issue(&request_id, events);
+            );
+            let capability = diagnostics.issue(&request_id, recorder.into_events());
             let mut response =
                 error_response(ErrorCode::CombineFailed, "failed to read combined file");
             insert_capability_header(&mut response, &capability);
@@ -373,13 +368,12 @@ async fn run_combine(
     // file now that its bytes are already read into the response body.
     drop(request_dir);
 
-    events.push(DiagnosticEvent::new(
-        &request_id,
+    recorder.record(
         "combine.response_returned",
         Level::Info,
         "returning the combined file to the caller",
-    ));
-    let capability = diagnostics.issue(&request_id, events);
+    );
+    let capability = diagnostics.issue(&request_id, recorder.into_events());
 
     let mut response = Response::builder()
         .status(StatusCode::OK)

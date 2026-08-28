@@ -6,10 +6,18 @@ use backend::{router, AppState};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
 #[tokio::main]
 async fn main() {
+    init_tracing();
+
     let config = AppConfig::from_env().unwrap_or_else(|err| {
-        eprintln!("configuration error: {err}");
+        tracing::error!("configuration error: {err}");
         std::process::exit(1);
     });
 
@@ -21,12 +29,12 @@ async fn main() {
         let assets_dir = std::path::Path::new(&config.assets_dir);
         let agent_config = AgentConfig::load(&assets_dir.join("agent-builder.toml"))
             .unwrap_or_else(|err| {
-                eprintln!("combinator-agent configuration error: {err}");
+                tracing::error!("combinator-agent configuration error: {err}");
                 std::process::exit(1);
             });
         let agent_template =
             AgentTemplate::load(&agent_config.template_path()).unwrap_or_else(|err| {
-                eprintln!("combinator-agent template error: {err}");
+                tracing::error!("combinator-agent template error: {err}");
                 std::process::exit(1);
             });
         Arc::new(RigCombineBackend::new(agent_config, agent_template))
@@ -42,6 +50,7 @@ async fn main() {
         .await
         .unwrap_or_else(|err| panic!("failed to bind {addr}: {err}"));
 
+    tracing::info!("file-combiner backend listening on {addr}");
     axum::serve(listener, router(state, &config.static_dir))
         .await
         .unwrap();
