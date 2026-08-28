@@ -31,7 +31,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 # unification and silently produces a cache-incompatible fingerprint.
 FROM chef AS deps-dev
 COPY --from=planner /app/recipe.json recipe.json
-RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/etc/secrets/agent_builder_ssh_key \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     bash scripts/docker/with-git-ssh-key.sh bash -c " \
@@ -41,7 +41,7 @@ RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secre
 # Same idea, for the frontend's wasm target in release profile — matching
 # how `trunk build --release` actually compiles it.
 FROM deps-dev AS deps-wasm
-RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/etc/secrets/agent_builder_ssh_key \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     bash scripts/docker/with-git-ssh-key.sh cargo chef cook --release --recipe-path recipe.json --target wasm32-unknown-unknown --package frontend
@@ -51,7 +51,7 @@ RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secre
 # -p backend` exactly (see the note on deps-dev above).
 FROM chef AS deps-release
 COPY --from=planner /app/recipe.json recipe.json
-RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/etc/secrets/agent_builder_ssh_key \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     bash scripts/docker/with-git-ssh-key.sh cargo chef cook --release --recipe-path recipe.json --package backend
@@ -59,7 +59,7 @@ RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secre
 # Adds the same frontend wasm32 release cook on top, for the production
 # image's `trunk build --release` step.
 FROM deps-release AS deps-release-wasm
-RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/etc/secrets/agent_builder_ssh_key \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     bash scripts/docker/with-git-ssh-key.sh cargo chef cook --release --recipe-path recipe.json --target wasm32-unknown-unknown --package frontend
@@ -67,7 +67,7 @@ RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secre
 # CI target: `docker build --ssh default --target lint .`
 FROM deps-dev AS lint
 COPY . .
-RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/etc/secrets/agent_builder_ssh_key \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     bash scripts/docker/with-git-ssh-key.sh bash scripts/docker/lint.sh
@@ -75,7 +75,7 @@ RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secre
 # CI target: `docker build --ssh default --target test .`
 FROM deps-dev AS test
 COPY . .
-RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/etc/secrets/agent_builder_ssh_key \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     bash scripts/docker/with-git-ssh-key.sh cargo test -p backend
@@ -84,7 +84,7 @@ RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secre
 FROM deps-wasm AS frontend-smoke
 RUN bash scripts/docker/install-node.sh
 COPY . .
-RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/etc/secrets/agent_builder_ssh_key \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     bash scripts/docker/with-git-ssh-key.sh bash scripts/docker/frontend-smoke.sh
@@ -92,7 +92,7 @@ RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secre
 # Production image target: `docker build --ssh default -t file-combiner .`
 FROM deps-release-wasm AS builder
 COPY . .
-RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/run/secrets/agent_builder_ssh_key \
+RUN --mount=type=ssh --mount=type=secret,id=agent_builder_ssh_key,dst=/etc/secrets/agent_builder_ssh_key \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     bash scripts/docker/with-git-ssh-key.sh bash scripts/docker/build-release.sh

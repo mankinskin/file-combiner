@@ -5,8 +5,8 @@
 # default), so this is a no-op there. Usage: with-git-ssh-key.sh <cmd> [args...]
 set -euo pipefail
 
-if [ -f /run/secrets/agent_builder_ssh_key ]; then
-  export GIT_SSH_COMMAND="ssh -i /run/secrets/agent_builder_ssh_key -o UserKnownHostsFile=/root/.ssh/known_hosts -o IdentitiesOnly=yes"
+if [ -f /etc/secrets/agent_builder_ssh_key ]; then
+  export GIT_SSH_COMMAND="ssh -i /etc/secrets/agent_builder_ssh_key -o UserKnownHostsFile=/root/.ssh/known_hosts -o IdentitiesOnly=yes"
 fi
 
 exec "$@"
