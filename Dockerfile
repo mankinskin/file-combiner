@@ -1,13 +1,22 @@
 # syntax=docker/dockerfile:1
 
-# Shared toolchain + cargo-chef, installed once and inherited by every
-# downstream stage via Docker's layer cache. Docker-specific setup lives in
-# scripts/docker/ — see that directory for what each script does.
-FROM rust:1.90.0-bookworm AS chef
+# Shared toolchain + cargo-chef are inherited from the `infrastructure`
+# repo's published image (see meta-workspace/infrastructure and package 06's
+# scripts/verify-digest-pull.sh, which proved this exact digest pulls
+# clean). The private `infrastructure-base` package requires `docker login
+# ghcr.io` with `read:packages` access; without that, override with
+# `--build-arg BASE_IMAGE=infrastructure-base:local` after building it
+# locally in a sibling `infrastructure` checkout:
+#   docker build -t infrastructure-base:local --target base .
+ARG BASE_IMAGE=ghcr.io/mankinskin/infrastructure-base@sha256:d0823f9fa4b323a2abdc23058b22dfdf947489e6558a1d4e0c180dcceec61247
+FROM ${BASE_IMAGE} AS chef
 WORKDIR /app
-COPY scripts/docker/ scripts/docker/
-RUN bash scripts/docker/install-base-toolchain.sh
-RUN cargo install cargo-chef --locked
+
+# `with-git-ssh-key.sh`'s generic Secret-File/SSH-agent dance is inherited
+# from the base image; these two env vars point it at this repo's specific
+# private dependency (agent-builder) instead of hardcoding it in the script.
+ENV SSH_SECRET_FILE=/etc/secrets/agent_builder_ssh_key
+ENV SSH_VERIFY_REMOTE_URL=ssh://git@github.com/mankinskin/agent-builder
 
 # Captures the workspace's dependency graph (Cargo.toml/Cargo.lock only, no
 # source), so this recipe only changes when a manifest or lockfile does —
