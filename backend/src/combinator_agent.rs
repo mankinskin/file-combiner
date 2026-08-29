@@ -72,12 +72,13 @@ pub trait CombineAgentBackend: Send + Sync {
     ) -> BoxFuture<'a, Result<PathBuf, CombineAgentError>>;
 }
 
-/// Presents the two attached files as data only. Every instruction on what
-/// to do with them belongs solely to the template's preamble, never here.
+/// Presents the two attached files as data only, labeled by role. Every
+/// instruction on what to do with them belongs solely to the template's
+/// preamble, never here.
 fn build_prompt(request: &CombineRequest) -> String {
     format!(
-        "Attached file: {}\n--- BEGIN FILE ---\n{}\n--- END FILE ---\n\n\
-         Attached file: {}\n--- BEGIN FILE ---\n{}\n--- END FILE ---",
+        "Sales guide template ({}):\n--- BEGIN FILE ---\n{}\n--- END FILE ---\n\n\
+         Customer information ({}):\n--- BEGIN FILE ---\n{}\n--- END FILE ---",
         request.first_name, request.first_contents, request.second_name, request.second_contents,
     )
 }
@@ -313,6 +314,29 @@ mod tests {
     };
     use crate::diagnostics::DiagnosticsRecorder;
 
+    #[test]
+    fn build_prompt_labels_first_as_template_and_second_as_customer_information() {
+        let request = CombineRequest {
+            first_name: "template.txt".to_owned(),
+            first_contents: "TEMPLATE-BODY".to_owned(),
+            second_name: "customer.txt".to_owned(),
+            second_contents: "CUSTOMER-BODY".to_owned(),
+        };
+
+        let prompt = super::build_prompt(&request);
+
+        assert!(prompt.contains("Sales guide template (template.txt)"));
+        assert!(prompt.contains("Customer information (customer.txt)"));
+        assert!(prompt.contains("TEMPLATE-BODY"));
+        assert!(prompt.contains("CUSTOMER-BODY"));
+        // The template label must precede the customer label so role order
+        // in the prompt matches the declared first/second roles.
+        assert!(
+            prompt.find("Sales guide template").unwrap()
+                < prompt.find("Customer information").unwrap()
+        );
+    }
+
     fn fresh_dir() -> std::path::PathBuf {
         let unique = format!(
             "{}-{:?}",
@@ -343,6 +367,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_tool_accepts_content_exactly_at_output_limit() {
+        let dir = fresh_dir();
+        let created = CreatedFile::default();
+        let tool = WriteCombinedFileTool::new(dir.clone(), created);
+
+        let at_limit = "a".repeat(super::MAX_OUTPUT_BYTES);
+        let filename = tool.write(&at_limit).await.unwrap();
+
+        let path = dir.join(&filename);
+        assert_eq!(
+            fs::metadata(&path).unwrap().len(),
+            super::MAX_OUTPUT_BYTES as u64
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn write_tool_rejects_oversized_content() {
         let dir = fresh_dir();
         let created = CreatedFile::default();
@@ -352,6 +393,33 @@ mod tests {
         let error = tool.write(&oversized).await.unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The fake backend is a non-production transport test double only; this
+    /// proves concatenation of two large inputs still succeeds while staying
+    /// under the 4 MiB output ceiling, without claiming the result is a
+    /// tailored guide.
+    #[tokio::test]
+    async fn fake_backend_concatenates_near_output_limit_inputs() {
+        let dir = fresh_dir();
+        let backend = FakeCombineBackend;
+        let half = super::MAX_OUTPUT_BYTES / 2 - 1;
+        let request = CombineRequest {
+            first_name: "first.txt".to_owned(),
+            first_contents: "a".repeat(half),
+            second_name: "second.txt".to_owned(),
+            second_contents: "b".repeat(half),
+        };
+
+        let path = backend
+            .combine(&dir, &request, &DiagnosticsRecorder::new("test-request"))
+            .await
+            .unwrap();
+
+        let combined = fs::read(&path).unwrap();
+        assert!(combined.len() < super::MAX_OUTPUT_BYTES);
+        assert_eq!(combined.len(), 2 * half + 1);
         fs::remove_dir_all(dir).unwrap();
     }
 

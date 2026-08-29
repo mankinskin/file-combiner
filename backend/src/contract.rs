@@ -15,6 +15,10 @@ pub const MAX_CONCURRENT_COMBINES: usize = 4;
 pub const REQUEST_TIMEOUT_SECS: u64 = 30;
 /// Exact number of file parts a combine request must contain.
 pub const REQUIRED_FILE_PARTS: usize = 2;
+/// Required multipart field name for the sales-guide template upload.
+pub const FIRST_FIELD_NAME: &str = "first";
+/// Required multipart field name for the customer-information upload.
+pub const SECOND_FIELD_NAME: &str = "second";
 
 /// Machine-readable error codes for the v1 contract. Every variant maps to
 /// exactly one HTTP status, enforced by [`ErrorCode::status`].
@@ -24,6 +28,7 @@ pub enum ErrorCode {
     MalformedMultipart,
     WrongFileCount,
     NonFileField,
+    InvalidFieldName,
     InvalidTextEncoding,
     MetadataTooLarge,
     PayloadTooLarge,
@@ -41,6 +46,7 @@ impl ErrorCode {
             ErrorCode::MalformedMultipart => "malformed_multipart",
             ErrorCode::WrongFileCount => "wrong_file_count",
             ErrorCode::NonFileField => "non_file_field",
+            ErrorCode::InvalidFieldName => "invalid_field_name",
             ErrorCode::InvalidTextEncoding => "invalid_text_encoding",
             ErrorCode::MetadataTooLarge => "metadata_too_large",
             ErrorCode::PayloadTooLarge => "payload_too_large",
@@ -58,6 +64,7 @@ impl ErrorCode {
             ErrorCode::MalformedMultipart
             | ErrorCode::WrongFileCount
             | ErrorCode::NonFileField
+            | ErrorCode::InvalidFieldName
             | ErrorCode::InvalidTextEncoding
             | ErrorCode::MetadataTooLarge => 400,
             ErrorCode::PayloadTooLarge | ErrorCode::FileTooLarge => 413,
@@ -106,6 +113,7 @@ mod tests {
             (ErrorCode::MalformedMultipart, 400),
             (ErrorCode::WrongFileCount, 400),
             (ErrorCode::NonFileField, 400),
+            (ErrorCode::InvalidFieldName, 400),
             (ErrorCode::InvalidTextEncoding, 400),
             (ErrorCode::MetadataTooLarge, 400),
             (ErrorCode::PayloadTooLarge, 413),
@@ -129,6 +137,8 @@ mod tests {
         assert_eq!(MAX_CONCURRENT_COMBINES, 4);
         assert_eq!(REQUEST_TIMEOUT_SECS, 30);
         assert_eq!(REQUIRED_FILE_PARTS, 2);
+        assert_eq!(FIRST_FIELD_NAME, "first");
+        assert_eq!(SECOND_FIELD_NAME, "second");
         // The raw body limit must cover two max-size files plus metadata.
         assert_eq!(MAX_REQUEST_BYTES, 2 * MAX_FILE_BYTES + MAX_METADATA_BYTES);
     }

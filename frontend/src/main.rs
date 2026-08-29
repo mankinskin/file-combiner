@@ -229,7 +229,7 @@ fn App() -> Element {
         main { class: "workspace",
             header { class: "workspace-header",
                 h1 { "file-combiner" }
-                p { "Enter the shared access key and choose two ordered text files to combine." }
+                p { "Enter the shared access key, then upload a sales guide template and customer information to generate a tailored guide." }
             }
             section { class: "workspace-body",
                 div { class: "action-panel",
@@ -247,7 +247,7 @@ fn App() -> Element {
                             disabled: !can_submit,
                             "aria-busy": if busy { "true" } else { "false" },
                             onclick: on_submit,
-                            "Combine"
+                            "Generate guide"
                         }
                         button {
                             r#type: "button",
@@ -261,8 +261,8 @@ fn App() -> Element {
                         p { class: "request-error", role: "alert", "{message}" }
                     }
                 }
-                FileSlot { label: "First file", slot_id: "first-file", selected: first_file }
-                FileSlot { label: "Second file", slot_id: "second-file", selected: second_file }
+                FileSlot { label: "Sales guide template", slot_id: "first-file", selected: first_file }
+                FileSlot { label: "Customer information", slot_id: "second-file", selected: second_file }
             }
             if let RequestState::Submitting(stage) = &*state.read() {
                 section { class: "processing-panel", role: "status", "aria-live": "polite",
@@ -287,7 +287,7 @@ fn App() -> Element {
             }
             if let RequestState::Success(result) = state.read().clone() {
                 section { class: "result-panel", role: "region", "aria-label": "Combined result",
-                    h2 { "Result" }
+                    h2 { "Personalized guide" }
                     div {
                         class: "file-preview",
                         tabindex: "0",
@@ -295,7 +295,7 @@ fn App() -> Element {
                         "aria-label": "Combined result preview",
                         pre { "{result.preview}" }
                     }
-                    button { class: "primary", onclick: on_download, "Download combined.txt" }
+                    button { class: "primary", onclick: on_download, "Download guide" }
                 }
             }
             if let Some(view) = diagnostics.read().clone() {

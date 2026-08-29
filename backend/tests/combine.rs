@@ -147,8 +147,8 @@ async fn probe_token_without_probe_header_returns_401() {
 async fn probe_token_with_probe_header_is_authorized() {
     let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
-        file_part("a", "a.txt", "one"),
-        file_part("b", "b.txt", "two"),
+        file_part("first", "first.txt", "one"),
+        file_part("second", "second.txt", "two"),
     ]);
     let response = app
         .oneshot(request(Some(PROBE_TOKEN), true, body))
@@ -196,7 +196,7 @@ async fn zero_file_parts_returns_wrong_file_count() {
 #[tokio::test]
 async fn one_file_part_returns_wrong_file_count() {
     let app = router(test_state(), "frontend/dist");
-    let body = build_multipart_body(&[file_part("a", "a.txt", "one")]);
+    let body = build_multipart_body(&[file_part("first", "first.txt", "one")]);
     let response = app
         .oneshot(request(Some(BEARER_TOKEN), false, body))
         .await
@@ -206,19 +206,34 @@ async fn one_file_part_returns_wrong_file_count() {
 }
 
 #[tokio::test]
-async fn three_file_parts_returns_wrong_file_count() {
+async fn unknown_field_name_is_rejected() {
     let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
-        file_part("a", "a.txt", "one"),
-        file_part("b", "b.txt", "two"),
-        file_part("c", "c.txt", "three"),
+        file_part("first", "first.txt", "one"),
+        file_part("second", "second.txt", "two"),
+        file_part("third", "third.txt", "three"),
     ]);
     let response = app
         .oneshot(request(Some(BEARER_TOKEN), false, body))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(error_code(response).await, "wrong_file_count");
+    assert_eq!(error_code(response).await, "invalid_field_name");
+}
+
+#[tokio::test]
+async fn duplicate_named_field_is_rejected() {
+    let app = router(test_state(), "frontend/dist");
+    let body = build_multipart_body(&[
+        file_part("first", "one.txt", "one"),
+        file_part("first", "two.txt", "two"),
+    ]);
+    let response = app
+        .oneshot(request(Some(BEARER_TOKEN), false, body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(response).await, "invalid_field_name");
 }
 
 #[tokio::test]
@@ -226,8 +241,8 @@ async fn non_file_field_is_rejected() {
     let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
         field_part("note", "not a file"),
-        file_part("a", "a.txt", "one"),
-        file_part("b", "b.txt", "two"),
+        file_part("first", "first.txt", "one"),
+        file_part("second", "second.txt", "two"),
     ]);
     let response = app
         .oneshot(request(Some(BEARER_TOKEN), false, body))
@@ -242,8 +257,8 @@ async fn oversized_file_returns_413_file_too_large() {
     let app = router(test_state(), "frontend/dist");
     let oversized = vec![b'a'; backend::contract::MAX_FILE_BYTES as usize + 1];
     let body = build_multipart_body(&[
-        file_part("a", "a.txt", oversized),
-        file_part("b", "b.txt", "two"),
+        file_part("first", "first.txt", oversized),
+        file_part("second", "second.txt", "two"),
     ]);
     let response = app
         .oneshot(request(Some(BEARER_TOKEN), false, body))
@@ -257,8 +272,8 @@ async fn oversized_file_returns_413_file_too_large() {
 async fn oversized_request_returns_413_payload_too_large() {
     let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
-        file_part("a", "a.txt", "one"),
-        file_part("b", "b.txt", "two"),
+        file_part("first", "first.txt", "one"),
+        file_part("second", "second.txt", "two"),
     ]);
     let mut req = request(Some(BEARER_TOKEN), false, body);
     req.headers_mut().insert(
@@ -278,8 +293,8 @@ async fn invalid_utf8_file_is_rejected() {
     let app = router(test_state(), "frontend/dist");
     let invalid_utf8 = vec![0xFF, 0xFE, 0xFD];
     let body = build_multipart_body(&[
-        file_part("a", "a.txt", invalid_utf8),
-        file_part("b", "b.txt", "two"),
+        file_part("first", "first.txt", invalid_utf8),
+        file_part("second", "second.txt", "two"),
     ]);
     let response = app
         .oneshot(request(Some(BEARER_TOKEN), false, body))

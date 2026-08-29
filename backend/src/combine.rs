@@ -16,8 +16,8 @@ use tokio::time::timeout;
 
 use crate::combinator_agent::{CombineAgentBackend, CombineAgentError, CombineRequest};
 use crate::contract::{
-    ErrorBody, ErrorCode, MAX_CONCURRENT_COMBINES, MAX_FILE_BYTES, MAX_PART_HEADER_BYTES,
-    MAX_REQUEST_BYTES, REQUEST_TIMEOUT_SECS, REQUIRED_FILE_PARTS,
+    ErrorBody, ErrorCode, FIRST_FIELD_NAME, MAX_CONCURRENT_COMBINES, MAX_FILE_BYTES,
+    MAX_PART_HEADER_BYTES, MAX_REQUEST_BYTES, REQUEST_TIMEOUT_SECS, SECOND_FIELD_NAME,
 };
 use crate::diagnostics::{DiagnosticsRecorder, DiagnosticsStore, Level};
 
@@ -222,7 +222,8 @@ async fn run_combine(
     backend: Arc<dyn CombineAgentBackend>,
     diagnostics: DiagnosticsStore,
 ) -> Response {
-    let mut files: Vec<UploadedFile> = Vec::with_capacity(REQUIRED_FILE_PARTS);
+    let mut first_file: Option<UploadedFile> = None;
+    let mut second_file: Option<UploadedFile> = None;
     let mut total_bytes: u64 = 0;
 
     loop {
@@ -241,13 +242,30 @@ async fn run_combine(
             return error_response(ErrorCode::MetadataTooLarge, "part metadata too large");
         }
 
+        let field_name = field.name().unwrap_or_default().to_owned();
+
         let Some(file_name) = field.file_name().map(str::to_owned) else {
             return error_response(ErrorCode::NonFileField, "only file parts are accepted");
         };
 
-        if files.len() >= REQUIRED_FILE_PARTS {
-            return error_response(ErrorCode::WrongFileCount, "exactly two files are required");
-        }
+        // Named-field enforcement verifies field names only; callers remain
+        // responsible for assigning template and customer content correctly.
+        let target = match field_name.as_str() {
+            FIRST_FIELD_NAME if first_file.is_none() => &mut first_file,
+            SECOND_FIELD_NAME if second_file.is_none() => &mut second_file,
+            FIRST_FIELD_NAME | SECOND_FIELD_NAME => {
+                return error_response(
+                    ErrorCode::InvalidFieldName,
+                    "duplicate multipart field name",
+                )
+            }
+            _ => {
+                return error_response(
+                    ErrorCode::InvalidFieldName,
+                    "file field must be named \"first\" or \"second\"",
+                )
+            }
+        };
 
         let mut field = field;
         let mut buffer: Vec<u8> = Vec::new();
@@ -280,19 +298,21 @@ async fn run_combine(
         }
 
         match String::from_utf8(buffer) {
-            Ok(contents) => files.push(UploadedFile {
-                name: file_name,
-                contents,
-            }),
+            Ok(contents) => {
+                *target = Some(UploadedFile {
+                    name: file_name,
+                    contents,
+                })
+            }
             Err(_) => {
                 return error_response(ErrorCode::InvalidTextEncoding, "file is not valid UTF-8")
             }
         }
     }
 
-    if files.len() != REQUIRED_FILE_PARTS {
+    let (Some(first_file), Some(second_file)) = (first_file, second_file) else {
         return error_response(ErrorCode::WrongFileCount, "exactly two files are required");
-    }
+    };
 
     let request_dir = match RequestDir::create() {
         Ok(dir) => dir,
@@ -304,17 +324,14 @@ async fn run_combine(
     recorder.record(
         "combine.received",
         Level::Info,
-        format!(
-            "received {} files totaling {total_bytes} bytes",
-            REQUIRED_FILE_PARTS
-        ),
+        format!("received 2 files totaling {total_bytes} bytes"),
     );
 
     let combine_request = CombineRequest {
-        first_name: files[0].name.clone(),
-        first_contents: files[0].contents.clone(),
-        second_name: files[1].name.clone(),
-        second_contents: files[1].contents.clone(),
+        first_name: first_file.name,
+        first_contents: first_file.contents,
+        second_name: second_file.name,
+        second_contents: second_file.contents,
     };
 
     recorder.record(
