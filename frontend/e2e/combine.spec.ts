@@ -36,10 +36,10 @@ test('combines pasted text and clears state after download', async ({ page }) =>
   await expect(page.getByLabel('Sales guide template')).toHaveValue('');
   await expect(page.getByLabel('Customer information')).toHaveValue('');
 
-  // If diagnostics were returned, the panel must be nested inside the workspace.
-  if ((await page.getByRole('region', { name: 'Diagnostics' }).count()) > 0) {
-    await expect(page.locator('main.workspace .workspace-columns .diagnostics-panel')).toHaveCount(1);
-  }
+  // The diagnostics sidebar is always present and never nested inside the
+  // centered workspace column.
+  await expect(page.getByRole('region', { name: 'Diagnostics' })).toBeVisible();
+  await expect(page.locator('main.workspace .diagnostics-sidebar')).toHaveCount(0);
 });
 
 test('loads a Markdown file into an editor slot', async ({ page }) => {

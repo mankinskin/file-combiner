@@ -14,6 +14,7 @@
   --space-3: 12px;
   --space-4: 18px;
   --space-5: 24px;
+  --sidebar-width: 320px;
   --font-stack: "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
@@ -24,10 +25,13 @@
 html,
 body {
   margin: 0;
-  min-height: 100%;
+  min-height: 100vh;
   background: var(--gray-100);
   color: var(--gray-900);
   font-family: var(--font-stack);
+  background-image: radial-gradient(circle at 1px 1px, rgba(0, 0, 0, 0.035) 1px, transparent 0);
+  background-size: 4px 4px;
+  background-repeat: repeat;
 }
 
 .workspace {
@@ -37,9 +41,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  background-image: radial-gradient(circle at 1px 1px, rgba(0, 0, 0, 0.035) 1px, transparent 0);
-  background-size: 4px 4px;
-  background-repeat: repeat;
 }
 
 .workspace-header h1 {
@@ -69,20 +70,6 @@ body {
   border: 1px solid var(--gray-300);
   border-radius: var(--radius);
   font-size: 1rem;
-}
-
-.workspace-columns {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: var(--space-3);
-  align-items: start;
-}
-
-.workspace-main {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
 }
 
 .sources-grid {
@@ -207,8 +194,7 @@ textarea:focus-visible,
 }
 
 .processing-panel,
-.result-panel,
-.diagnostics-panel {
+.result-panel {
   background: var(--gray-50);
   border: 1px solid var(--gray-200);
   border-radius: var(--radius);
@@ -242,11 +228,23 @@ textarea:focus-visible,
   color: var(--gray-900);
 }
 
-.diagnostics-panel {
-  min-width: 0;
+.diagnostics-sidebar {
+  background: var(--gray-50);
+  border-left: 1px solid var(--gray-200);
+  padding: var(--space-4);
+  overflow-y: auto;
 }
 
-.diagnostics-panel ul {
+.diagnostics-sidebar h2 {
+  margin-top: 0;
+}
+
+.diagnostics-empty {
+  color: var(--gray-600);
+  font-size: 0.85rem;
+}
+
+.diagnostics-sidebar ul {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -269,9 +267,19 @@ textarea:focus-visible,
   font-weight: 600;
 }
 
-@media (min-width: 900px) {
-  .workspace-columns.with-diagnostics {
-    grid-template-columns: 1fr minmax(260px, 320px);
+/* The sidebar is pinned to the browser window's own right edge, independent
+   of the centered `.workspace` column, so it never shifts with page content. */
+@media (min-width: 1100px) {
+  body {
+    padding-right: var(--sidebar-width);
+  }
+
+  .diagnostics-sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: var(--sidebar-width);
+    height: 100vh;
   }
 }
 

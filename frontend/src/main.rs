@@ -221,99 +221,97 @@ fn App() -> Element {
         clear_file_input("second-file");
     };
 
-    let has_diagnostics = diagnostics.read().is_some();
-
     rsx! {
-        main { class: "workspace",
-            header { class: "workspace-header",
-                h1 { "file-combiner" }
-                p { "Enter the shared access key, then paste or upload a sales guide template and customer information to generate a tailored guide." }
-                div { class: "key-row",
-                    label { r#for: "token-input", "Access key" }
-                    input {
-                        id: "token-input",
-                        r#type: "password",
-                        value: "{token}",
-                        disabled: busy,
-                        oninput: move |evt| token.set(evt.value()),
+        div { class: "app-shell",
+            main { class: "workspace",
+                header { class: "workspace-header",
+                    h1 { "file-combiner" }
+                    p { "Enter the shared access key, then paste or upload a sales guide template and customer information to generate a tailored guide." }
+                    div { class: "key-row",
+                        label { r#for: "token-input", "Access key" }
+                        input {
+                            id: "token-input",
+                            r#type: "password",
+                            value: "{token}",
+                            disabled: busy,
+                            oninput: move |evt| token.set(evt.value()),
+                        }
                     }
                 }
-            }
-            section { class: if has_diagnostics { "workspace-columns with-diagnostics" } else { "workspace-columns" },
-                div { class: "workspace-main",
-                    div { class: "sources-grid",
-                        FileSlot { label: "Sales guide template", slot_id: "first-file", source: first_source }
-                        FileSlot { label: "Customer information", slot_id: "second-file", source: second_source }
+                div { class: "sources-grid",
+                    FileSlot { label: "Sales guide template", slot_id: "first-file", source: first_source }
+                    FileSlot { label: "Customer information", slot_id: "second-file", source: second_source }
+                }
+                div { class: "actions-row",
+                    button {
+                        class: "primary",
+                        disabled: !can_submit,
+                        "aria-busy": if busy { "true" } else { "false" },
+                        onclick: on_submit,
+                        "Generate guide"
                     }
-                    div { class: "actions-row",
-                        button {
-                            class: "primary",
-                            disabled: !can_submit,
-                            "aria-busy": if busy { "true" } else { "false" },
-                            onclick: on_submit,
-                            "Generate guide"
-                        }
-                        button {
-                            r#type: "button",
-                            class: "secondary",
-                            disabled: busy,
-                            onclick: on_reset,
-                            "Reset"
-                        }
-                        if let RequestState::Failed(message) = &*state.read() {
-                            p { class: "request-error", role: "alert", "{message}" }
-                        }
+                    button {
+                        r#type: "button",
+                        class: "secondary",
+                        disabled: busy,
+                        onclick: on_reset,
+                        "Reset"
                     }
-                    if let RequestState::Submitting(stage) = &*state.read() {
-                        section { class: "processing-panel", role: "status", "aria-live": "polite",
-                            h2 { "Processing" }
-                            ul {
-                                for s in Stage::ALL {
-                                    {
-                                        let class_name: &str = if s.index() < stage.index() {
-                                            "done"
-                                        } else if s == *stage {
-                                            "active"
-                                        } else {
-                                            "pending"
-                                        };
-                                        rsx! {
-                                            li { class: class_name, "{s.label()}" }
-                                        }
+                    if let RequestState::Failed(message) = &*state.read() {
+                        p { class: "request-error", role: "alert", "{message}" }
+                    }
+                }
+                if let RequestState::Submitting(stage) = &*state.read() {
+                    section { class: "processing-panel", role: "status", "aria-live": "polite",
+                        h2 { "Processing" }
+                        ul {
+                            for s in Stage::ALL {
+                                {
+                                    let class_name: &str = if s.index() < stage.index() {
+                                        "done"
+                                    } else if s == *stage {
+                                        "active"
+                                    } else {
+                                        "pending"
+                                    };
+                                    rsx! {
+                                        li { class: class_name, "{s.label()}" }
                                     }
                                 }
                             }
                         }
                     }
-                    if let RequestState::Success(result) = state.read().clone() {
-                        section { class: "result-panel", role: "region", "aria-label": "Combined result",
-                            h2 { "Personalized guide" }
-                            div {
-                                class: "file-preview",
-                                tabindex: "0",
-                                role: "region",
-                                "aria-label": "Combined result preview",
-                                pre { "{result.preview}" }
-                            }
-                            button { class: "primary", onclick: on_download, "Download guide" }
+                }
+                if let RequestState::Success(result) = state.read().clone() {
+                    section { class: "result-panel", role: "region", "aria-label": "Combined result",
+                        h2 { "Personalized guide" }
+                        div {
+                            class: "file-preview",
+                            tabindex: "0",
+                            role: "region",
+                            "aria-label": "Combined result preview",
+                            pre { "{result.preview}" }
                         }
+                        button { class: "primary", onclick: on_download, "Download guide" }
                     }
                 }
+            }
+            aside { class: "diagnostics-sidebar", role: "region", "aria-label": "Diagnostics",
+                h2 { "Diagnostics" }
                 if let Some(view) = diagnostics.read().clone() {
-                    aside { class: "diagnostics-panel", role: "region", "aria-label": "Diagnostics",
-                        h2 { "Diagnostics" }
-                        if view.truncated {
-                            p { class: "diagnostics-truncated", "Some records were dropped to stay within retention limits." }
-                        }
-                        ul {
-                            for event in view.events {
-                                li { class: "diagnostics-event level-{event.level}",
-                                    span { class: "diagnostics-kind", "{event.kind}" }
-                                    span { class: "diagnostics-message", "{event.message}" }
-                                }
+                    if view.truncated {
+                        p { class: "diagnostics-truncated", "Some records were dropped to stay within retention limits." }
+                    }
+                    ul {
+                        for event in view.events {
+                            li { class: "diagnostics-event level-{event.level}",
+                                span { class: "diagnostics-kind", "{event.kind}" }
+                                span { class: "diagnostics-message", "{event.message}" }
                             }
                         }
                     }
+                } else {
+                    p { class: "diagnostics-empty", "No diagnostics yet. They appear here once a request completes." }
                 }
             }
         }
