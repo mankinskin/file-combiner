@@ -8,10 +8,11 @@ All four original waypoints, plus the browser UX reconciliation described in the
 
 ## Browser UX contract
 
-- **Two ordered upload slots.** Each slot locally decodes the selected file with fatal (strict) UTF-8 decoding. A decoding failure rejects that slot with an accessible error, blocks submission, and shows no preview; it never falls back to binary/hex display.
-- **Read-only previews only.** Valid text is rendered as sanitized, scrollable, keyboard-focusable text — never as injected HTML. Control characters other than tab/newline are visibly replaced. The preview cannot edit the file; the original selected bytes are what is submitted.
-- **Privacy boundary.** Local validation and preview never leave the browser, and the workspace never displays raw backend logs, request headers, credentials, or server metadata — only the four fixed processing stages (access validation, file reading, combining, preparing download) and the final result.
-- **Retry and reset.** A failed request keeps the access key, file selections, and previews in memory for retry. An explicit Reset, a successful download, or a page reload clears all local state.
+- **Two always-editable sources.** Each of the two source panels is a multiline text editor that is visible immediately, before any file is chosen. A user may paste or type UTF-8 text directly into it, or populate it by choosing a `.txt` or `.md` file (decoded with fatal/strict UTF-8). Whatever text is currently in the editor — typed, pasted, or loaded — is exactly what gets submitted; there is no separate read-only preview step.
+- **Normalized, never-hidden display.** Line endings are normalized to LF and non-printable control characters are silently dropped from the editor content; the UI never shows a placeholder glyph (e.g. `<0xEF><0xBF><0xBD>`, a shorthand for the Unicode replacement character) for characters that were removed. A file exceeding the 1 MiB limit, or one that fails strict UTF-8 decoding, is rejected with an accessible error and leaves the editor's existing content untouched.
+- **Compact, editing-first layout.** The access key lives in the page header, not the action area, and the two source editors take up most of the page so there's more room to read and edit long text. When present, the diagnostics panel appears as a sidebar next to the main editing column on wide viewports, and stacks below it on narrow ones. The subtle dotted background is bounded to the workspace content rather than filling the whole viewport.
+- **Privacy boundary.** Local editing and validation never leave the browser, and the workspace never displays raw backend logs, request headers, credentials, or server metadata — only the four fixed processing stages (access validation, file reading, combining, preparing download) and the final result.
+- **Retry and reset.** A failed request keeps the access key and both editors' content in memory for retry. An explicit Reset, a successful download, or a page reload clears all local state.
 - **Result.** A successful combine shows the response text in a read-only preview plus an explicit download action; the downloaded bytes are exactly the endpoint response (`first + "\n" + second`).
 
 ## Runtime configuration
@@ -77,7 +78,7 @@ The frontend and backend are served from a single Axum process, so there's one b
 
    By default this binds to `http://127.0.0.1:8080` and serves the frontend from `frontend/dist`.
 
-3. Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in a browser. Enter the same value you set for `COMBINE_BEARER_TOKEN` in the **Access key** field, choose a first and second UTF-8 text file (each under 1 MiB) to see their read-only previews, then click **Combine** to see the processing panel and, on success, the result preview and **Download combined.txt** action.
+3. Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in a browser. Enter the same value you set for `COMBINE_BEARER_TOKEN` in the header's **Access key** field, then paste or type text into the two source editors (or choose a first and second `.txt`/`.md` file, each under 1 MiB, to load their content into the editors), and click **Generate guide** to see the processing panel and, on success, the result preview and **Download guide** action.
 
 Re-run step 1 after any frontend change; the backend only needs restarting after a backend change (`STATIC_DIR` always points at the same `frontend/dist` folder built in step 1).
 

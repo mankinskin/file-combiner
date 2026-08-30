@@ -8,12 +8,12 @@
   --accent: #2f6f4f;
   --accent-strong: #1f5138;
   --danger: #8a2c2c;
-  --radius: 10px;
+  --radius: 6px;
   --space-1: 4px;
   --space-2: 8px;
-  --space-3: 16px;
-  --space-4: 24px;
-  --space-5: 32px;
+  --space-3: 12px;
+  --space-4: 18px;
+  --space-5: 24px;
   --font-stack: "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
@@ -30,18 +30,16 @@ body {
   font-family: var(--font-stack);
 }
 
-body {
-  background-image: radial-gradient(circle at 1px 1px, rgba(0, 0, 0, 0.035) 1px, transparent 0);
-  background-size: 4px 4px;
-}
-
 .workspace {
-  max-width: 880px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: var(--space-5) var(--space-4);
+  padding: var(--space-4) var(--space-4) var(--space-5);
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
+  background-image: radial-gradient(circle at 1px 1px, rgba(0, 0, 0, 0.035) 1px, transparent 0);
+  background-size: 4px 4px;
+  background-repeat: repeat;
 }
 
 .workspace-header h1 {
@@ -50,42 +48,54 @@ body {
 }
 
 .workspace-header p {
-  margin: 0;
+  margin: 0 0 var(--space-3);
   color: var(--gray-600);
 }
 
-.workspace-body {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-4);
-}
-
-.action-panel {
-  grid-column: 1 / -1;
-  background: var(--gray-50);
-  border: 1px solid var(--gray-200);
-  border-radius: var(--radius);
-  padding: var(--space-4);
+.key-row {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  align-items: center;
+  gap: var(--space-2);
 }
 
-.action-panel label {
+.key-row label {
   font-weight: 600;
+  white-space: nowrap;
 }
 
-.action-panel input[type="password"] {
+.key-row input[type="password"] {
+  flex: 0 1 260px;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--gray-300);
   border-radius: var(--radius);
   font-size: 1rem;
 }
 
+.workspace-columns {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.workspace-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.sources-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
 .actions {
   display: flex;
   gap: var(--space-2);
 }
+
 
 button {
   font-family: inherit;
@@ -119,6 +129,7 @@ button:disabled {
 
 button:focus-visible,
 input:focus-visible,
+textarea:focus-visible,
 .file-preview:focus-visible {
   outline: 3px solid var(--accent);
   outline-offset: 2px;
@@ -132,6 +143,32 @@ input:focus-visible,
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  min-width: 0;
+}
+
+.file-slot label {
+  font-weight: 600;
+}
+
+.source-editor {
+  width: 100%;
+  min-height: 320px;
+  flex: 1 1 auto;
+  resize: vertical;
+  background: white;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+  font-family: inherit;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.file-slot-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
 .file-preview {
@@ -162,8 +199,16 @@ input:focus-visible,
   font-size: 0.85rem;
 }
 
+.actions-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
 .processing-panel,
-.result-panel {
+.result-panel,
+.diagnostics-panel {
   background: var(--gray-50);
   border: 1px solid var(--gray-200);
   border-radius: var(--radius);
@@ -197,9 +242,50 @@ input:focus-visible,
   color: var(--gray-900);
 }
 
-@media (max-width: 600px) {
-  .workspace-body {
+.diagnostics-panel {
+  min-width: 0;
+}
+
+.diagnostics-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.diagnostics-event {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  border-radius: var(--radius);
+  background: var(--gray-100);
+  font-size: 0.8rem;
+}
+
+.diagnostics-kind {
+  font-weight: 600;
+}
+
+@media (min-width: 900px) {
+  .workspace-columns.with-diagnostics {
+    grid-template-columns: 1fr minmax(260px, 320px);
+  }
+}
+
+@media (max-width: 720px) {
+  .sources-grid {
     grid-template-columns: 1fr;
+  }
+
+  .key-row {
+    flex-wrap: wrap;
+  }
+
+  .key-row input[type="password"] {
+    flex-basis: 100%;
   }
 }
 

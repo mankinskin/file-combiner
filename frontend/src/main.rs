@@ -33,11 +33,12 @@ struct DiagnosticsView {
     truncated: bool,
 }
 
-#[derive(Clone, PartialEq)]
-struct SelectedFile {
-    name: String,
-    bytes: Vec<u8>,
-    preview: String,
+/// An editable source: pasted or typed text, optionally backed by a loaded
+/// file name. The editor content, not the original file bytes, is submitted.
+#[derive(Clone, PartialEq, Default)]
+struct SourceState {
+    name: Option<String>,
+    content: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,15 +101,14 @@ async fn next_frame() {
     let _ = JsFuture::from(promise).await;
 }
 
-/// Replaces control characters other than tab/newline with a visible
-/// placeholder so previews never hide non-printable content.
-fn sanitize_preview(text: &str) -> String {
-    text.chars()
-        .map(|c| match c {
-            '\n' | '\t' => c,
-            c if c.is_control() => '\u{FFFD}',
-            c => c,
-        })
+/// Normalizes line endings to LF and drops non-printable control characters
+/// (other than tab/newline) silently, so editors and previews never show a
+/// placeholder glyph for content that isn't actually there.
+fn normalize_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
         .collect()
 }
 
@@ -144,31 +144,27 @@ fn clear_file_input(id: &str) {
     }
 }
 
-/// Combines two authenticated text uploads through same-origin `/api/combine`.
-/// The token and file selections live only in this component's memory; a
+/// Combines two authenticated text sources through same-origin `/api/combine`.
+/// The token and source content live only in this component's memory; a
 /// page reload clears both.
 #[component]
 fn App() -> Element {
     let mut token = use_signal(String::new);
-    let mut first_file = use_signal(|| Option::<SelectedFile>::None);
-    let mut second_file = use_signal(|| Option::<SelectedFile>::None);
+    let mut first_source = use_signal(SourceState::default);
+    let mut second_source = use_signal(SourceState::default);
     let mut state = use_signal(|| RequestState::Idle);
     let mut diagnostics = use_signal(|| Option::<DiagnosticsView>::None);
 
     let busy = matches!(*state.read(), RequestState::Submitting(_));
     let can_submit = !token.read().is_empty()
-        && first_file.read().is_some()
-        && second_file.read().is_some()
+        && !first_source.read().content.trim().is_empty()
+        && !second_source.read().content.trim().is_empty()
         && !busy;
 
     let on_submit = move |_| {
         let token_value = token.read().clone();
-        let Some(first) = first_file.read().clone() else {
-            return;
-        };
-        let Some(second) = second_file.read().clone() else {
-            return;
-        };
+        let first = first_source.read().clone();
+        let second = second_source.read().clone();
         spawn(async move {
             state.set(RequestState::Submitting(Stage::AccessValidation));
             state.set(RequestState::Submitting(Stage::FileReading));
@@ -181,7 +177,7 @@ fn App() -> Element {
                     state.set(RequestState::Submitting(Stage::PreparingDownload));
                     match std::str::from_utf8(&bytes) {
                         Ok(text) => state.set(RequestState::Success(CombineResult {
-                            preview: sanitize_preview(text),
+                            preview: normalize_text(text),
                             bytes,
                         })),
                         Err(_) => {
@@ -203,8 +199,8 @@ fn App() -> Element {
 
     let on_reset = move |_| {
         token.set(String::new());
-        first_file.set(None);
-        second_file.set(None);
+        first_source.set(SourceState::default());
+        second_source.set(SourceState::default());
         state.set(RequestState::Idle);
         diagnostics.set(None);
         clear_file_input("first-file");
@@ -217,22 +213,22 @@ fn App() -> Element {
             trigger_download(&result.bytes);
         }
         token.set(String::new());
-        first_file.set(None);
-        second_file.set(None);
+        first_source.set(SourceState::default());
+        second_source.set(SourceState::default());
         state.set(RequestState::Idle);
         diagnostics.set(None);
         clear_file_input("first-file");
         clear_file_input("second-file");
     };
 
+    let has_diagnostics = diagnostics.read().is_some();
+
     rsx! {
         main { class: "workspace",
             header { class: "workspace-header",
                 h1 { "file-combiner" }
-                p { "Enter the shared access key, then upload a sales guide template and customer information to generate a tailored guide." }
-            }
-            section { class: "workspace-body",
-                div { class: "action-panel",
+                p { "Enter the shared access key, then paste or upload a sales guide template and customer information to generate a tailored guide." }
+                div { class: "key-row",
                     label { r#for: "token-input", "Access key" }
                     input {
                         id: "token-input",
@@ -241,7 +237,15 @@ fn App() -> Element {
                         disabled: busy,
                         oninput: move |evt| token.set(evt.value()),
                     }
-                    div { class: "actions",
+                }
+            }
+            section { class: if has_diagnostics { "workspace-columns with-diagnostics" } else { "workspace-columns" },
+                div { class: "workspace-main",
+                    div { class: "sources-grid",
+                        FileSlot { label: "Sales guide template", slot_id: "first-file", source: first_source }
+                        FileSlot { label: "Customer information", slot_id: "second-file", source: second_source }
+                    }
+                    div { class: "actions-row",
                         button {
                             class: "primary",
                             disabled: !can_submit,
@@ -256,59 +260,57 @@ fn App() -> Element {
                             onclick: on_reset,
                             "Reset"
                         }
+                        if let RequestState::Failed(message) = &*state.read() {
+                            p { class: "request-error", role: "alert", "{message}" }
+                        }
                     }
-                    if let RequestState::Failed(message) = &*state.read() {
-                        p { class: "request-error", role: "alert", "{message}" }
-                    }
-                }
-                FileSlot { label: "Sales guide template", slot_id: "first-file", selected: first_file }
-                FileSlot { label: "Customer information", slot_id: "second-file", selected: second_file }
-            }
-            if let RequestState::Submitting(stage) = &*state.read() {
-                section { class: "processing-panel", role: "status", "aria-live": "polite",
-                    h2 { "Processing" }
-                    ul {
-                        for s in Stage::ALL {
-                            {
-                                let class_name: &str = if s.index() < stage.index() {
-                                    "done"
-                                } else if s == *stage {
-                                    "active"
-                                } else {
-                                    "pending"
-                                };
-                                rsx! {
-                                    li { class: class_name, "{s.label()}" }
+                    if let RequestState::Submitting(stage) = &*state.read() {
+                        section { class: "processing-panel", role: "status", "aria-live": "polite",
+                            h2 { "Processing" }
+                            ul {
+                                for s in Stage::ALL {
+                                    {
+                                        let class_name: &str = if s.index() < stage.index() {
+                                            "done"
+                                        } else if s == *stage {
+                                            "active"
+                                        } else {
+                                            "pending"
+                                        };
+                                        rsx! {
+                                            li { class: class_name, "{s.label()}" }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            }
-            if let RequestState::Success(result) = state.read().clone() {
-                section { class: "result-panel", role: "region", "aria-label": "Combined result",
-                    h2 { "Personalized guide" }
-                    div {
-                        class: "file-preview",
-                        tabindex: "0",
-                        role: "region",
-                        "aria-label": "Combined result preview",
-                        pre { "{result.preview}" }
+                    if let RequestState::Success(result) = state.read().clone() {
+                        section { class: "result-panel", role: "region", "aria-label": "Combined result",
+                            h2 { "Personalized guide" }
+                            div {
+                                class: "file-preview",
+                                tabindex: "0",
+                                role: "region",
+                                "aria-label": "Combined result preview",
+                                pre { "{result.preview}" }
+                            }
+                            button { class: "primary", onclick: on_download, "Download guide" }
+                        }
                     }
-                    button { class: "primary", onclick: on_download, "Download guide" }
                 }
-            }
-            if let Some(view) = diagnostics.read().clone() {
-                section { class: "diagnostics-panel", role: "region", "aria-label": "Diagnostics",
-                    h2 { "Diagnostics" }
-                    if view.truncated {
-                        p { class: "diagnostics-truncated", "Some records were dropped to stay within retention limits." }
-                    }
-                    ul {
-                        for event in view.events {
-                            li { class: "diagnostics-event level-{event.level}",
-                                span { class: "diagnostics-kind", "{event.kind}" }
-                                span { class: "diagnostics-message", "{event.message}" }
+                if let Some(view) = diagnostics.read().clone() {
+                    aside { class: "diagnostics-panel", role: "region", "aria-label": "Diagnostics",
+                        h2 { "Diagnostics" }
+                        if view.truncated {
+                            p { class: "diagnostics-truncated", "Some records were dropped to stay within retention limits." }
+                        }
+                        ul {
+                            for event in view.events {
+                                li { class: "diagnostics-event level-{event.level}",
+                                    span { class: "diagnostics-kind", "{event.kind}" }
+                                    span { class: "diagnostics-message", "{event.message}" }
+                                }
                             }
                         }
                     }
@@ -319,15 +321,11 @@ fn App() -> Element {
 }
 
 #[component]
-fn FileSlot(
-    label: &'static str,
-    slot_id: &'static str,
-    selected: Signal<Option<SelectedFile>>,
-) -> Element {
-    let mut selected = selected;
+fn FileSlot(label: &'static str, slot_id: &'static str, source: Signal<SourceState>) -> Element {
+    let mut source = source;
     let mut error = use_signal(|| Option::<String>::None);
     let error_id = format!("{slot_id}-error");
-    let preview_id = format!("{slot_id}-preview");
+    let editor_id = format!("{slot_id}-editor");
 
     let on_change = move |evt: Event<FormData>| {
         let Some(file_engine) = evt.files() else {
@@ -339,55 +337,55 @@ fn FileSlot(
             };
             let Some(size) = file_engine.file_size(&name).await else {
                 error.set(Some("Could not read file".to_string()));
-                selected.set(None);
                 return;
             };
             if size > MAX_FILE_BYTES {
                 error.set(Some("File exceeds the 1 MiB limit".to_string()));
-                selected.set(None);
                 return;
             }
             let Some(bytes) = file_engine.read_file(&name).await else {
                 error.set(Some("Could not read file".to_string()));
-                selected.set(None);
                 return;
             };
             match std::str::from_utf8(&bytes) {
                 Ok(text) => {
                     error.set(None);
-                    selected.set(Some(SelectedFile {
-                        name,
-                        preview: sanitize_preview(text),
-                        bytes,
-                    }));
+                    source.set(SourceState {
+                        name: Some(name),
+                        content: normalize_text(text),
+                    });
                 }
                 Err(_) => {
                     error.set(Some("File is not valid UTF-8 text".to_string()));
-                    selected.set(None);
                 }
             }
         });
     };
 
+    let on_input = move |evt: Event<FormData>| {
+        let normalized = normalize_text(&evt.value());
+        source.write().content = normalized;
+    };
+
     rsx! {
         div { class: "file-slot",
-            label { r#for: "{slot_id}", "{label}" }
-            input {
-                id: "{slot_id}",
-                r#type: "file",
-                accept: "text/plain,.txt",
-                onchange: on_change,
+            label { r#for: "{editor_id}", "{label}" }
+            textarea {
+                id: "{editor_id}",
+                class: "source-editor",
+                value: "{source.read().content}",
+                oninput: on_input,
             }
-            if let Some(file) = selected.read().clone() {
-                div {
-                    class: "file-preview",
-                    id: "{preview_id}",
-                    tabindex: "0",
-                    role: "region",
-                    "aria-label": "{label} preview: {file.name}",
-                    pre { "{file.preview}" }
+            div { class: "file-slot-footer",
+                input {
+                    id: "{slot_id}",
+                    r#type: "file",
+                    accept: "text/plain,text/markdown,.txt,.md",
+                    onchange: on_change,
                 }
-                span { class: "file-meta", "{file.name} ({file.bytes.len()} bytes)" }
+                if let Some(name) = source.read().name.clone() {
+                    span { class: "file-meta", "{name}" }
+                }
             }
             if let Some(message) = error.read().clone() {
                 span { id: "{error_id}", class: "file-error", role: "alert", "{message}" }
@@ -398,8 +396,8 @@ fn FileSlot(
 
 async fn submit_combine(
     token: &str,
-    first: &SelectedFile,
-    second: &SelectedFile,
+    first: &SourceState,
+    second: &SourceState,
 ) -> (Result<Vec<u8>, String>, Option<String>) {
     match submit_combine_inner(token, first, second).await {
         Ok((bytes, capability)) => (Ok(bytes), capability),
@@ -409,8 +407,8 @@ async fn submit_combine(
 
 async fn submit_combine_inner(
     token: &str,
-    first: &SelectedFile,
-    second: &SelectedFile,
+    first: &SourceState,
+    second: &SourceState,
 ) -> Result<(Vec<u8>, Option<String>), (String, Option<String>)> {
     let form = WebFormData::new().map_err(|_| ("Failed to build the request".to_string(), None))?;
     append_file(&form, "first", first).map_err(|message| (message, None))?;
@@ -518,8 +516,9 @@ async fn fetch_diagnostics(token: &str, capability: &str) -> Result<DiagnosticsV
     serde_json::from_str(&text).map_err(|_| "Failed to parse diagnostics".to_string())
 }
 
-fn append_file(form: &WebFormData, field: &str, file: &SelectedFile) -> Result<(), String> {
-    let array = Uint8Array::from(file.bytes.as_slice());
+fn append_file(form: &WebFormData, field: &str, source: &SourceState) -> Result<(), String> {
+    let bytes = source.content.as_bytes();
+    let array = Uint8Array::from(bytes);
     let parts = Array::new();
     parts.push(&array);
 
@@ -528,7 +527,8 @@ fn append_file(form: &WebFormData, field: &str, file: &SelectedFile) -> Result<(
     let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &blob_options)
         .map_err(|_| "Failed to build the request".to_string())?;
 
-    form.append_with_blob_and_filename(field, &blob, &file.name)
+    let name = source.name.clone().unwrap_or_else(|| format!("{field}.txt"));
+    form.append_with_blob_and_filename(field, &blob, &name)
         .map_err(|_| "Failed to build the request".to_string())
 }
 
