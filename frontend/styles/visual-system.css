@@ -230,7 +230,8 @@ textarea:focus-visible,
 
 .diagnostics-sidebar {
   background: var(--gray-50);
-  border-left: 1px solid var(--gray-200);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
   padding: var(--space-4);
   overflow-y: auto;
 }
@@ -267,19 +268,23 @@ textarea:focus-visible,
   font-weight: 600;
 }
 
-/* The sidebar is pinned to the browser window's own right edge, independent
-   of the centered `.workspace` column, so it never shifts with page content. */
+/* Floats above the page without reserving layout space, so `.workspace`
+   stays centered in the full viewport regardless of diagnostics content. */
 @media (min-width: 1100px) {
-  body {
-    padding-right: var(--sidebar-width);
-  }
-
   .diagnostics-sidebar {
     position: fixed;
-    top: 0;
-    right: 0;
+    top: var(--space-4);
+    right: var(--space-4);
     width: var(--sidebar-width);
-    height: 100vh;
+    max-height: calc(100vh - var(--space-4) * 2);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  }
+}
+
+@media (max-width: 1099.98px) {
+  .diagnostics-sidebar {
+    max-width: 1200px;
+    margin: 0 auto;
   }
 }
 
