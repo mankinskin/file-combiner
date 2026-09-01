@@ -2,6 +2,14 @@
 
 Standalone Dioxus (frontend) and Axum (backend) application that combines exactly two authenticated text uploads into one downloadable plaintext file. See the [ROADMAP](../transcripts/27-08-2026_dioxus-axum-file-combiner-plan/ROADMAP.md) dossier for the full plan; this repository implements it waypoint by waypoint.
 
+## Quickstart
+
+Primary use case: run the app locally to combine two pasted or uploaded text files into one downloadable file.
+
+1. Get SSH access to the private `agent-builder` dependency (see [Access to the private `agent-builder` dependency](#access-to-the-private-agent-builder-dependency) below).
+2. Install prerequisites (see [Prerequisites](#prerequisites) below).
+3. Build the frontend and run the backend (see [Run it locally](#run-it-locally) below).
+
 ## Status
 
 All four original waypoints, plus the browser UX reconciliation described in the [file-combiner UI reconciliation dossier](../transcripts/27-08-2026_app-ui-design-auth-crates/README.md), are implemented: the Cargo workspace and shared v1 contract, the authenticated `/api/combine` endpoint with bounded in-memory multipart handling, the centered Dioxus document workspace served same-origin by Axum, and the container image with GitHub Actions CI/CD to Render.
