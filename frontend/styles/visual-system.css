@@ -72,6 +72,33 @@ body {
   font-size: 1rem;
 }
 
+.credential-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.credential-row label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.credential-row select,
+.credential-row input {
+  min-height: 38px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius);
+  background: white;
+  color: var(--gray-900);
+  font: inherit;
+}
+
+.credential-row input {
+  flex: 1 1 240px;
+}
+
 .sources-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -298,6 +325,12 @@ textarea:focus-visible,
   }
 
   .key-row input[type="password"] {
+    flex-basis: 100%;
+  }
+
+  .credential-row select,
+  .credential-row input {
+    width: 100%;
     flex-basis: 100%;
   }
 }

@@ -1,3 +1,4 @@
+use base64::Engine;
 use dioxus::prelude::*;
 use js_sys::{Array, Promise, Reflect, Uint8Array};
 use wasm_bindgen::{JsCast, JsValue};
@@ -39,6 +40,40 @@ struct DiagnosticsView {
 struct SourceState {
     name: Option<String>,
     content: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CredentialMode {
+    SharedKey,
+    Group,
+    DirectPat,
+}
+
+#[derive(Clone, PartialEq)]
+enum Credential {
+    SharedKey(String),
+    Group { name: String, password: String },
+    DirectPat(String),
+}
+
+impl Credential {
+    fn is_complete(&self) -> bool {
+        match self {
+            Credential::SharedKey(key) | Credential::DirectPat(key) => !key.is_empty(),
+            Credential::Group { name, password } => !name.is_empty() && !password.is_empty(),
+        }
+    }
+
+    fn authorization_header(&self) -> String {
+        match self {
+            Credential::SharedKey(key) | Credential::DirectPat(key) => format!("Bearer {key}"),
+            Credential::Group { name, password } => {
+                let encoded =
+                    base64::engine::general_purpose::STANDARD.encode(format!("{name}:{password}"));
+                format!("Group {encoded}")
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -149,20 +184,32 @@ fn clear_file_input(id: &str) {
 /// page reload clears both.
 #[component]
 fn App() -> Element {
-    let mut token = use_signal(String::new);
+    let mut credential_mode = use_signal(|| CredentialMode::SharedKey);
+    let mut shared_key = use_signal(String::new);
+    let mut group_name = use_signal(String::new);
+    let mut group_password = use_signal(String::new);
+    let mut direct_pat = use_signal(String::new);
     let mut first_source = use_signal(SourceState::default);
     let mut second_source = use_signal(SourceState::default);
     let mut state = use_signal(|| RequestState::Idle);
     let mut diagnostics = use_signal(|| Option::<DiagnosticsView>::None);
 
+    let credential = match *credential_mode.read() {
+        CredentialMode::SharedKey => Credential::SharedKey(shared_key.read().clone()),
+        CredentialMode::Group => Credential::Group {
+            name: group_name.read().clone(),
+            password: group_password.read().clone(),
+        },
+        CredentialMode::DirectPat => Credential::DirectPat(direct_pat.read().clone()),
+    };
     let busy = matches!(*state.read(), RequestState::Submitting(_));
-    let can_submit = !token.read().is_empty()
+    let can_submit = credential.is_complete()
         && !first_source.read().content.trim().is_empty()
         && !second_source.read().content.trim().is_empty()
         && !busy;
 
     let on_submit = move |_| {
-        let token_value = token.read().clone();
+        let credential_value = credential.clone();
         let first = first_source.read().clone();
         let second = second_source.read().clone();
         spawn(async move {
@@ -171,7 +218,7 @@ fn App() -> Element {
             state.set(RequestState::Submitting(Stage::Combining));
             next_frame().await;
             diagnostics.set(None);
-            let (result, capability) = submit_combine(&token_value, &first, &second).await;
+            let (result, capability) = submit_combine(&credential_value, &first, &second).await;
             match result {
                 Ok(bytes) => {
                     state.set(RequestState::Submitting(Stage::PreparingDownload));
@@ -190,7 +237,7 @@ fn App() -> Element {
                 Err(message) => state.set(RequestState::Failed(message)),
             }
             if let Some(capability) = capability {
-                if let Ok(fetched) = fetch_diagnostics(&token_value, &capability).await {
+                if let Ok(fetched) = fetch_diagnostics(&credential_value, &capability).await {
                     diagnostics.set(Some(fetched));
                 }
             }
@@ -198,7 +245,11 @@ fn App() -> Element {
     };
 
     let on_reset = move |_| {
-        token.set(String::new());
+        credential_mode.set(CredentialMode::SharedKey);
+        shared_key.set(String::new());
+        group_name.set(String::new());
+        group_password.set(String::new());
+        direct_pat.set(String::new());
         first_source.set(SourceState::default());
         second_source.set(SourceState::default());
         state.set(RequestState::Idle);
@@ -212,7 +263,11 @@ fn App() -> Element {
         if let RequestState::Success(result) = &*state.read() {
             trigger_download(&result.bytes);
         }
-        token.set(String::new());
+        credential_mode.set(CredentialMode::SharedKey);
+        shared_key.set(String::new());
+        group_name.set(String::new());
+        group_password.set(String::new());
+        direct_pat.set(String::new());
         first_source.set(SourceState::default());
         second_source.set(SourceState::default());
         state.set(RequestState::Idle);
@@ -226,15 +281,69 @@ fn App() -> Element {
             main { class: "workspace",
                 header { class: "workspace-header",
                     h1 { "file-combiner" }
-                    p { "Enter the shared access key, then paste or upload a sales guide template and customer information to generate a tailored guide." }
-                    div { class: "key-row",
-                        label { r#for: "token-input", "Access key" }
-                        input {
-                            id: "token-input",
-                            r#type: "password",
-                            value: "{token}",
+                    p { "Choose an access method, then paste or upload a sales guide template and customer information to generate a tailored guide." }
+                    div { class: "credential-row",
+                        label { r#for: "credential-mode", "Access method" }
+                        select {
+                            id: "credential-mode",
+                            value: match *credential_mode.read() {
+                                CredentialMode::SharedKey => "shared-key",
+                                CredentialMode::Group => "group",
+                                CredentialMode::DirectPat => "direct-pat",
+                            },
                             disabled: busy,
-                            oninput: move |evt| token.set(evt.value()),
+                            onchange: move |evt| match evt.value().as_str() {
+                                "group" => credential_mode.set(CredentialMode::Group),
+                                "direct-pat" => credential_mode.set(CredentialMode::DirectPat),
+                                _ => credential_mode.set(CredentialMode::SharedKey),
+                            },
+                            option { value: "shared-key", "Shared access key" }
+                            option { value: "group", "Group credentials" }
+                            option { value: "direct-pat", "Copilot personal access token" }
+                        }
+                        match *credential_mode.read() {
+                            CredentialMode::SharedKey => rsx! {
+                                input {
+                                    id: "token-input",
+                                    r#type: "password",
+                                    placeholder: "Shared access key",
+                                    value: "{shared_key}",
+                                    disabled: busy,
+                                    "aria-label": "Access key",
+                                    oninput: move |evt| shared_key.set(evt.value()),
+                                }
+                            },
+                            CredentialMode::Group => rsx! {
+                                input {
+                                    id: "group-name-input",
+                                    r#type: "text",
+                                    placeholder: "Group name",
+                                    value: "{group_name}",
+                                    disabled: busy,
+                                    "aria-label": "Group name",
+                                    oninput: move |evt| group_name.set(evt.value()),
+                                }
+                                input {
+                                    id: "group-password-input",
+                                    r#type: "password",
+                                    placeholder: "Group password",
+                                    value: "{group_password}",
+                                    disabled: busy,
+                                    "aria-label": "Group password",
+                                    oninput: move |evt| group_password.set(evt.value()),
+                                }
+                            },
+                            CredentialMode::DirectPat => rsx! {
+                                input {
+                                    id: "direct-pat-input",
+                                    r#type: "password",
+                                    placeholder: "Copilot personal access token",
+                                    value: "{direct_pat}",
+                                    disabled: busy,
+                                    "aria-label": "Copilot personal access token",
+                                    oninput: move |evt| direct_pat.set(evt.value()),
+                                }
+                            },
                         }
                     }
                 }
@@ -393,18 +502,18 @@ fn FileSlot(label: &'static str, slot_id: &'static str, source: Signal<SourceSta
 }
 
 async fn submit_combine(
-    token: &str,
+    credential: &Credential,
     first: &SourceState,
     second: &SourceState,
 ) -> (Result<Vec<u8>, String>, Option<String>) {
-    match submit_combine_inner(token, first, second).await {
+    match submit_combine_inner(credential, first, second).await {
         Ok((bytes, capability)) => (Ok(bytes), capability),
         Err((message, capability)) => (Err(message), capability),
     }
 }
 
 async fn submit_combine_inner(
-    token: &str,
+    credential: &Credential,
     first: &SourceState,
     second: &SourceState,
 ) -> Result<(Vec<u8>, Option<String>), (String, Option<String>)> {
@@ -414,7 +523,7 @@ async fn submit_combine_inner(
 
     let headers = Headers::new().map_err(|_| ("Failed to build the request".to_string(), None))?;
     headers
-        .set("Authorization", &format!("Bearer {token}"))
+        .set("Authorization", &credential.authorization_header())
         .map_err(|_| ("Failed to build the request".to_string(), None))?;
 
     let opts = RequestInit::new();
@@ -472,11 +581,14 @@ async fn submit_combine_inner(
 }
 
 /// Fetches the diagnostics recorded for one combine request via its opaque
-/// capability, using the same bearer credential as the original request.
-async fn fetch_diagnostics(token: &str, capability: &str) -> Result<DiagnosticsView, String> {
+/// capability, using the same credential as the original request.
+async fn fetch_diagnostics(
+    credential: &Credential,
+    capability: &str,
+) -> Result<DiagnosticsView, String> {
     let headers = Headers::new().map_err(|_| "Failed to build the request".to_string())?;
     headers
-        .set("Authorization", &format!("Bearer {token}"))
+        .set("Authorization", &credential.authorization_header())
         .map_err(|_| "Failed to build the request".to_string())?;
 
     let opts = RequestInit::new();

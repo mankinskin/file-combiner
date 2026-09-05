@@ -101,6 +101,51 @@ test('retains the access key and editor content after a failed request for retry
   await expect(page.getByLabel('Sales guide template')).toHaveValue(firstText);
 });
 
+test('sends group credentials with the Group authorization scheme', async ({ page }) => {
+  let authorization = '';
+  await page.route('**/api/combine', (route) => {
+    authorization = route.request().headers().authorization ?? '';
+    return route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 'unauthorized', message: 'invalid credentials' }),
+    });
+  });
+
+  await page.goto('/');
+  await page.getByLabel('Access method').selectOption('group');
+  await page.getByLabel('Group name').fill('sales');
+  await page.getByLabel('Group password').fill('secret');
+  await page.getByLabel('Sales guide template').fill('template');
+  await page.getByLabel('Customer information').fill('customer');
+  await page.getByRole('button', { name: 'Generate guide' }).click();
+
+  await expect(page.getByRole('alert', { name: '' })).toContainText('invalid credentials');
+  expect(authorization).toBe(`Group ${Buffer.from('sales:secret').toString('base64')}`);
+});
+
+test('sends a direct PAT with the Bearer authorization scheme', async ({ page }) => {
+  let authorization = '';
+  await page.route('**/api/combine', (route) => {
+    authorization = route.request().headers().authorization ?? '';
+    return route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 'unauthorized', message: 'invalid credentials' }),
+    });
+  });
+
+  await page.goto('/');
+  await page.getByLabel('Access method').selectOption('direct-pat');
+  await page.getByLabel('Copilot personal access token').fill('ghp_test_token');
+  await page.getByLabel('Sales guide template').fill('template');
+  await page.getByLabel('Customer information').fill('customer');
+  await page.getByRole('button', { name: 'Generate guide' }).click();
+
+  await expect(page.getByRole('alert', { name: '' })).toContainText('invalid credentials');
+  expect(authorization).toBe('Bearer ghp_test_token');
+});
+
 test('reset clears all local state and returns focus to the access key field', async ({
   page,
 }) => {
