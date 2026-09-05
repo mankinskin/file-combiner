@@ -49,6 +49,25 @@ echo "second content" > "${WORKDIR}/second.txt"
 head -c 1100000 /dev/zero | tr '\0' 'a' > "${WORKDIR}/oversized.txt"
 printf '\xFF\xFE\xFD' > "${WORKDIR}/invalid-utf8.txt"
 
+cat > "${WORKDIR}/first.txt" <<'EOF'
+---
+version: 1
+conversation:
+  context: smoke test
+  type: advisory
+  subject: artifact delivery
+role: adviser
+personalization:
+  - goals
+artifacts:
+  - name: preparation-brief
+    format: markdown
+    sections:
+      - Priorities
+---
+# Preparation brief
+EOF
+
 expect_status() {
   local description="$1"
   local expected="$2"
@@ -62,11 +81,17 @@ expect_status() {
   echo "ok: ${description} (${actual})"
 }
 
-expect_status "authenticated combine succeeds" 200 \
+manifest="$(curl -sf \
   -X POST "${BASE_URL}/api/combine" \
   -H "Authorization: Bearer ${GROUP_TOKEN}" \
   -F "first=@${WORKDIR_CURL}/first.txt;type=text/plain" \
-  -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain"
+  -F "second=@${WORKDIR_CURL}/second.txt;type=text/plain")"
+artifact_url="$(printf '%s' "$manifest" | sed -n 's/.*"download_url":"\([^"]*\)".*/\1/p')"
+[[ -n "$artifact_url" ]] || { echo "FAIL: combine response omitted artifact download URL" >&2; exit 1; }
+expect_status "authenticated artifact download succeeds" 200 \
+  -H "Authorization: Bearer ${GROUP_TOKEN}" \
+  "${BASE_URL}${artifact_url}"
+echo "ok: authenticated combine returns an artifact manifest"
 
 expect_status "missing credentials rejected" 401 \
   -X POST "${BASE_URL}/api/combine" \

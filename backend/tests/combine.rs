@@ -11,6 +11,7 @@ use tower::ServiceExt;
 const BEARER_TOKEN: &str = "test-group-token";
 const PROBE_TOKEN: &str = "test-probe-token";
 const BOUNDARY: &str = "combine-test-boundary";
+const VALID_TEMPLATE: &str = "---\nversion: 1\nconversation:\n  context: first meeting\n  type: advisory\n  subject: retirement planning\nrole: financial adviser\npersonalization:\n  - goals\nartifacts:\n  - name: preparation-brief\n    format: markdown\n    sections:\n      - Priorities\n  - name: question-list\n    format: markdown\n    sections:\n      - Questions\n---\n# Preparation brief";
 
 struct Part {
     name: &'static str,
@@ -83,6 +84,14 @@ fn request(auth: Option<&str>, probe_header: bool, body: Vec<u8>) -> Request<Bod
     builder.body(Body::from(body)).unwrap()
 }
 
+fn download_request(auth: Option<&str>, path: &str) -> Request<Body> {
+    let mut builder = Request::builder().method("GET").uri(path);
+    if let Some(auth) = auth {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {auth}"));
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
 fn test_state() -> AppState {
     AppState::new(
         BEARER_TOKEN.to_string(),
@@ -119,7 +128,7 @@ async fn missing_credentials_returns_401() {
 async fn invalid_credentials_returns_401() {
     let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
-        file_part("first", "first.txt", "one"),
+        file_part("first", "first.txt", VALID_TEMPLATE),
         file_part("second", "second.txt", "two"),
     ]);
     let response = app
@@ -149,7 +158,7 @@ async fn probe_token_without_probe_header_returns_401() {
 async fn probe_token_with_probe_header_is_authorized() {
     let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
-        file_part("first", "first.txt", "one"),
+        file_part("first", "first.txt", VALID_TEMPLATE),
         file_part("second", "second.txt", "two"),
     ]);
     let response = app
@@ -160,27 +169,75 @@ async fn probe_token_with_probe_header_is_authorized() {
 }
 
 #[tokio::test]
-async fn two_valid_files_combine_byte_exact_with_attachment_headers() {
+async fn combine_returns_manifest_and_each_artifact_downloads_individually() {
     let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
-        file_part("first", "first.txt", "hello"),
+        file_part("first", "first.txt", VALID_TEMPLATE),
         file_part("second", "second.txt", "world"),
     ]);
     let response = app
+        .clone()
         .oneshot(request(Some(BEARER_TOKEN), false, body))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers().get(header::CONTENT_TYPE).unwrap(),
-        "text/plain; charset=utf-8"
-    );
-    assert_eq!(
-        response.headers().get(header::CONTENT_DISPOSITION).unwrap(),
-        "attachment; filename=\"combined.txt\""
+        "application/json"
     );
     let body = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(&body[..], b"hello\nworld");
+    let manifest: Value = serde_json::from_slice(&body).unwrap();
+    let artifacts = manifest.get("artifacts").unwrap().as_array().unwrap();
+    assert_eq!(artifacts.len(), 2);
+    assert_eq!(artifacts[0].get("id").unwrap(), "artifact-0");
+    assert_eq!(artifacts[0].get("name").unwrap(), "preparation-brief");
+    assert_eq!(artifacts[1].get("id").unwrap(), "artifact-1");
+    assert_eq!(artifacts[1].get("name").unwrap(), "question-list");
+
+    for artifact in artifacts {
+        let url = artifact.get("download_url").unwrap().as_str().unwrap();
+        let response = app
+            .clone()
+            .oneshot(download_request(Some(BEARER_TOKEN), url))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let name = artifact.get("name").unwrap().as_str().unwrap();
+        assert_eq!(&body[..], format!("# {name}\n\nworld").as_bytes());
+    }
+
+    let url = artifacts[0].get("download_url").unwrap().as_str().unwrap();
+    let response = app.oneshot(download_request(None, url)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn template_without_artifacts_returns_combine_failed() {
+    let app = router(test_state(), "frontend/dist");
+    let body = build_multipart_body(&[
+        file_part(
+            "first",
+            "first.txt",
+            VALID_TEMPLATE.replace(
+                "artifacts:\n  - name: preparation-brief\n    format: markdown\n    sections:\n      - Priorities\n",
+                "artifacts: []\n",
+            ),
+        ),
+        file_part("second", "second.txt", "world"),
+    ]);
+
+    let response = app
+        .oneshot(request(Some(BEARER_TOKEN), false, body))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(error_code(response).await, "combine_failed");
 }
 
 #[tokio::test]
@@ -373,7 +430,7 @@ async fn diagnostics_body(response: axum::response::Response) -> Value {
 async fn combine_issues_diagnostics_capability_with_structured_redacted_records() {
     let app = router(test_state(), "frontend/dist");
     let body = build_multipart_body(&[
-        file_part("first", "first.txt", "hello"),
+        file_part("first", "first.txt", VALID_TEMPLATE),
         file_part("second", "second.txt", "world"),
     ]);
 
@@ -416,7 +473,7 @@ async fn combine_issues_diagnostics_capability_with_structured_redacted_records(
             assert!(object.contains_key("timestamp_ms"));
             let message = object.get("message").unwrap().as_str().unwrap();
             assert!(
-                !message.contains("hello"),
+                !message.contains("retirement planning"),
                 "message must not contain upload content"
             );
             assert!(

@@ -8,33 +8,38 @@ const secondPath = path.join(__dirname, 'fixtures', 'second.txt');
 const firstMarkdownPath = path.join(__dirname, 'fixtures', 'first.md');
 const invalidUtf8Path = path.join(__dirname, 'fixtures', 'invalid-utf8.txt');
 
-test('combines pasted text and clears state after download', async ({ page }) => {
+test('lists generated artifacts and downloads each one individually', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('Access key').fill(token);
 
   const firstText = fs.readFileSync(firstPath, 'utf-8');
   const secondText = fs.readFileSync(secondPath, 'utf-8');
-  await page.getByLabel('Sales guide template').fill(firstText);
-  await page.getByLabel('Customer information').fill(secondText);
+  await page.getByLabel('Conversation template').fill(firstText);
+  await page.getByLabel('Person information').fill(secondText);
 
   await page.getByRole('button', { name: 'Generate guide' }).click();
   await expect(page.getByRole('status')).toBeVisible();
 
+  await expect(page.getByRole('region', { name: 'Generated artifacts' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download preparation-brief' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download question-list' })).toBeVisible();
+
   const [download] = await Promise.all([
     page.waitForEvent('download'),
-    page.getByRole('button', { name: 'Download guide' }).click(),
+    page.getByRole('button', { name: 'Download preparation-brief' }).click(),
   ]);
 
-  expect(download.suggestedFilename()).toBe('combined.txt');
+  expect(download.suggestedFilename()).toBe('artifact-0.txt');
 
   const downloadPath = await download.path();
   const content = fs.readFileSync(downloadPath as string, 'utf-8');
-  expect(content).toBe(firstText + '\n' + secondText);
+  expect(content).toBe('# preparation-brief\n\n' + secondText);
 
-  // Completing the download clears the access key and both editors.
-  await expect(page.getByLabel('Access key')).toHaveValue('');
-  await expect(page.getByLabel('Sales guide template')).toHaveValue('');
-  await expect(page.getByLabel('Customer information')).toHaveValue('');
+  // A single artifact download retains the other artifact and editable inputs.
+  await expect(page.getByRole('button', { name: 'Download question-list' })).toBeVisible();
+  await expect(page.getByLabel('Access key')).toHaveValue(token);
+  await expect(page.getByLabel('Conversation template')).toHaveValue(firstText);
+  await expect(page.getByLabel('Person information')).toHaveValue(secondText);
 
   // The diagnostics sidebar is always present and never nested inside the
   // centered workspace column.
@@ -48,7 +53,7 @@ test('loads a Markdown file into an editor slot', async ({ page }) => {
   await fileInputs.nth(0).setInputFiles(firstMarkdownPath);
 
   const expected = fs.readFileSync(firstMarkdownPath, 'utf-8').replace(/\r\n/g, '\n');
-  await expect(page.getByLabel('Sales guide template')).toHaveValue(expected);
+  await expect(page.getByLabel('Conversation template')).toHaveValue(expected);
 });
 
 test('rejects an invalid UTF-8 file locally and leaves the editor untouched', async ({
@@ -59,7 +64,7 @@ test('rejects an invalid UTF-8 file locally and leaves the editor untouched', as
   await fileInputs.nth(0).setInputFiles(invalidUtf8Path);
 
   await expect(page.getByRole('alert')).toContainText('not valid UTF-8');
-  await expect(page.getByLabel('Sales guide template')).toHaveValue('');
+  await expect(page.getByLabel('Conversation template')).toHaveValue('');
 });
 
 test('never shows a visible marker for CR line endings or control characters', async ({
@@ -67,9 +72,9 @@ test('never shows a visible marker for CR line endings or control characters', a
 }) => {
   await page.goto('/');
   const pasted = 'first line\r\nsecond line\r\x07third line';
-  await page.getByLabel('Sales guide template').fill(pasted);
+  await page.getByLabel('Conversation template').fill(pasted);
 
-  const value = await page.getByLabel('Sales guide template').inputValue();
+  const value = await page.getByLabel('Conversation template').inputValue();
   expect(value).not.toContain('\r');
   expect(value).not.toContain('\u0007');
   expect(value).not.toContain('\u{FFFD}');
@@ -91,14 +96,14 @@ test('retains the access key and editor content after a failed request for retry
   await page.getByLabel('Access key').fill(token);
   const firstText = fs.readFileSync(firstPath, 'utf-8');
   const secondText = fs.readFileSync(secondPath, 'utf-8');
-  await page.getByLabel('Sales guide template').fill(firstText);
-  await page.getByLabel('Customer information').fill(secondText);
+  await page.getByLabel('Conversation template').fill(firstText);
+  await page.getByLabel('Person information').fill(secondText);
 
   await page.getByRole('button', { name: 'Generate guide' }).click();
 
   await expect(page.getByRole('alert', { name: '' })).toContainText('invalid credentials');
   await expect(page.getByLabel('Access key')).toHaveValue(token);
-  await expect(page.getByLabel('Sales guide template')).toHaveValue(firstText);
+  await expect(page.getByLabel('Conversation template')).toHaveValue(firstText);
 });
 
 test('sends group credentials with the Group authorization scheme', async ({ page }) => {
@@ -116,8 +121,8 @@ test('sends group credentials with the Group authorization scheme', async ({ pag
   await page.getByLabel('Access method').selectOption('group');
   await page.getByLabel('Group name').fill('sales');
   await page.getByLabel('Group password').fill('secret');
-  await page.getByLabel('Sales guide template').fill('template');
-  await page.getByLabel('Customer information').fill('customer');
+  await page.getByLabel('Conversation template').fill('template');
+  await page.getByLabel('Person information').fill('customer');
   await page.getByRole('button', { name: 'Generate guide' }).click();
 
   await expect(page.getByRole('alert', { name: '' })).toContainText('invalid credentials');
@@ -138,8 +143,8 @@ test('sends a direct PAT with the Bearer authorization scheme', async ({ page })
   await page.goto('/');
   await page.getByLabel('Access method').selectOption('direct-pat');
   await page.getByLabel('Copilot personal access token').fill('ghp_test_token');
-  await page.getByLabel('Sales guide template').fill('template');
-  await page.getByLabel('Customer information').fill('customer');
+  await page.getByLabel('Conversation template').fill('template');
+  await page.getByLabel('Person information').fill('customer');
   await page.getByRole('button', { name: 'Generate guide' }).click();
 
   await expect(page.getByRole('alert', { name: '' })).toContainText('invalid credentials');
@@ -151,13 +156,13 @@ test('reset clears all local state and returns focus to the access key field', a
 }) => {
   await page.goto('/');
   await page.getByLabel('Access key').fill(token);
-  await page.getByLabel('Sales guide template').fill('draft content');
+  await page.getByLabel('Conversation template').fill('draft content');
 
   await page.getByRole('button', { name: 'Reset' }).click();
 
   await expect(page.getByLabel('Access key')).toHaveValue('');
   await expect(page.getByLabel('Access key')).toBeFocused();
-  await expect(page.getByLabel('Sales guide template')).toHaveValue('');
+  await expect(page.getByLabel('Conversation template')).toHaveValue('');
   await expect(page.locator('input[type=file]').nth(0)).toHaveValue('');
 });
 

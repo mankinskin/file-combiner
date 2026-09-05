@@ -49,7 +49,24 @@ echo "  PASS: /healthz returns 200"
 # Test 3: Combine endpoint with group credentials (if provided)
 if [[ -n "$GROUP_NAME" && -n "$GROUP_PASSWORD" ]]; then
   echo "TEST 3: Group authentication on combine endpoint"
-  echo "first" > "${WORKDIR}/first.txt"
+  cat > "${WORKDIR}/first.txt" <<'EOF'
+---
+version: 1
+conversation:
+  context: smoke test
+  type: advisory
+  subject: artifact delivery
+role: adviser
+personalization:
+  - goals
+artifacts:
+  - name: preparation-brief
+    format: markdown
+    sections:
+      - Priorities
+---
+# Preparation brief
+EOF
   echo "second" > "${WORKDIR}/second.txt"
   WORKDIR_CURL="$(to_curl_path "$WORKDIR")"
   
@@ -71,7 +88,24 @@ fi
 
 # Test 4: Probe token combine and verify no credential leakage in diagnostics
 echo "TEST 4: Probe-authenticated combine and credential redaction"
-echo "first" > "${WORKDIR}/first.txt"
+cat > "${WORKDIR}/first.txt" <<'EOF'
+---
+version: 1
+conversation:
+  context: smoke test
+  type: advisory
+  subject: artifact delivery
+role: adviser
+personalization:
+  - goals
+artifacts:
+  - name: preparation-brief
+    format: markdown
+    sections:
+      - Priorities
+---
+# Preparation brief
+EOF
 echo "second" > "${WORKDIR}/second.txt"
 WORKDIR_CURL="$(to_curl_path "$WORKDIR")"
 

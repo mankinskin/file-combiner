@@ -1,8 +1,9 @@
 //! The authenticated `/api/combine` endpoint: bounded, in-memory multipart handling.
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::multipart::MultipartRejection;
@@ -11,6 +12,7 @@ use axum::http::{header, HeaderMap, HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Serialize;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
@@ -22,6 +24,82 @@ use crate::contract::{
 };
 use crate::diagnostics::{DiagnosticsRecorder, DiagnosticsStore, Level};
 use base64::Engine;
+
+const ARTIFACT_TTL: Duration = Duration::from_secs(300);
+const MAX_STORED_ARTIFACTS: usize = 64;
+
+#[derive(Debug, Serialize)]
+struct ArtifactResponse {
+    id: String,
+    name: String,
+    format: String,
+    download_url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ArtifactListResponse {
+    artifacts: Vec<ArtifactResponse>,
+}
+
+#[derive(Clone)]
+struct ArtifactStore(Arc<Mutex<HashMap<String, StoredArtifact>>>);
+
+#[derive(Clone)]
+struct StoredArtifact {
+    content: Vec<u8>,
+    expires_at: Instant,
+}
+
+impl ArtifactStore {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(HashMap::new())))
+    }
+
+    fn insert(
+        &self,
+        request_id: &str,
+        artifacts: Vec<crate::combinator_agent::GeneratedArtifact>,
+    ) -> Result<Vec<ArtifactResponse>, CombineAgentError> {
+        let mut stored = self.0.lock().unwrap();
+        let now = Instant::now();
+        stored.retain(|_, artifact| artifact.expires_at > now);
+        if stored.len() + artifacts.len() > MAX_STORED_ARTIFACTS {
+            return Err(CombineAgentError::InvalidOutput(
+                "artifact store capacity is exhausted".to_owned(),
+            ));
+        }
+
+        let mut response = Vec::with_capacity(artifacts.len());
+        for artifact in artifacts {
+            let content = fs::read(&artifact.path)
+                .map_err(|error| CombineAgentError::InvalidOutput(error.to_string()))?;
+            let key = format!("{request_id}/{}", artifact.id);
+            stored.insert(
+                key,
+                StoredArtifact {
+                    content,
+                    expires_at: now + ARTIFACT_TTL,
+                },
+            );
+            response.push(ArtifactResponse {
+                download_url: format!("/api/artifacts/{request_id}/{}", artifact.id),
+                id: artifact.id,
+                name: artifact.name,
+                format: artifact.format,
+            });
+        }
+        Ok(response)
+    }
+
+    fn get(&self, request_id: &str, artifact_id: &str) -> Option<Vec<u8>> {
+        let mut stored = self.0.lock().unwrap();
+        let now = Instant::now();
+        stored.retain(|_, artifact| artifact.expires_at > now);
+        stored
+            .get(&format!("{request_id}/{artifact_id}"))
+            .map(|artifact| artifact.content.clone())
+    }
+}
 
 /// Header a caller must send, alongside `COMBINE_PROBE_TOKEN`, to use the
 /// internal probe path. The browser UI never sends this header.
@@ -50,6 +128,7 @@ pub struct AppState {
     combine_slots: Arc<Semaphore>,
     backend: Arc<dyn CombineAgentBackend>,
     diagnostics: DiagnosticsStore,
+    artifacts: ArtifactStore,
 }
 
 impl AppState {
@@ -74,6 +153,7 @@ impl AppState {
             combine_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_COMBINES)),
             backend,
             diagnostics: DiagnosticsStore::new(),
+            artifacts: ArtifactStore::new(),
         }
     }
 
@@ -127,8 +207,36 @@ impl Drop for RequestDir {
 pub fn routes(state: AppState) -> Router {
     Router::new()
         .route("/api/combine", post(combine))
+        .route(
+            "/api/artifacts/:request_id/:artifact_id",
+            get(download_artifact),
+        )
         .route("/api/diagnostics/:capability", get(diagnostics))
         .with_state(state)
+}
+
+async fn download_artifact(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath((request_id, artifact_id)): AxumPath<(String, String)>,
+) -> Response {
+    match authorize(&state, &headers) {
+        AuthorizationResult::Unauthorized(response) => return response,
+        AuthorizationResult::Authorized | AuthorizationResult::AuthorizedWithDirectPat(_) => {}
+    }
+
+    let Some(content) = state.artifacts.get(&request_id, &artifact_id) else {
+        return error_response(ErrorCode::NotFound, "artifact not found");
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{artifact_id}.txt\""),
+        )
+        .body(Body::from(content))
+        .expect("response with well-formed static headers")
 }
 
 /// Returns bounded, redacted diagnostics for one combine request. Requires
@@ -309,6 +417,7 @@ async fn combine(
             multipart,
             state.backend.clone(),
             state.diagnostics.clone(),
+            state.artifacts.clone(),
             direct_pat,
         ),
     )
@@ -339,6 +448,7 @@ async fn run_combine(
     mut multipart: Multipart,
     backend: Arc<dyn CombineAgentBackend>,
     diagnostics: DiagnosticsStore,
+    artifacts: ArtifactStore,
     direct_pat: Option<String>,
 ) -> Response {
     let mut first_file: Option<UploadedFile> = None;
@@ -459,7 +569,7 @@ async fn run_combine(
         "invoking the combinator agent",
     );
 
-    let combined_path = match backend
+    let generated_artifacts = match backend
         .combine(
             request_dir.path(),
             &combine_request,
@@ -478,6 +588,7 @@ async fn run_combine(
         }
         Err(error) => {
             let message = match error {
+                CombineAgentError::InvalidTemplate(_) => "the template contract is invalid",
                 CombineAgentError::Execution(_) => "the combine agent failed to run",
                 CombineAgentError::NoFileCreated => "the combine agent did not produce a file",
                 CombineAgentError::InvalidOutput(_) => "the combine agent produced an invalid file",
@@ -494,40 +605,42 @@ async fn run_combine(
         }
     };
 
-    let combined = match fs::read(&combined_path) {
-        Ok(bytes) => bytes,
+    let artifact_list = match artifacts.insert(&request_id, generated_artifacts) {
+        Ok(artifacts) => artifacts,
         Err(_) => {
             recorder.record(
                 "combine.failed",
                 Level::Error,
-                "failed to read the combined file",
+                "failed to retain generated artifacts",
             );
             let capability = diagnostics.issue(&request_id, recorder.into_events());
-            let mut response =
-                error_response(ErrorCode::CombineFailed, "failed to read combined file");
+            let mut response = error_response(
+                ErrorCode::CombineFailed,
+                "failed to retain generated artifacts",
+            );
             insert_capability_header(&mut response, &capability);
             return response;
         }
     };
-    // `request_dir` drops here, deleting staged uploads and the created
-    // file now that its bytes are already read into the response body.
+    // `request_dir` drops here after the output bytes enter the bounded store.
     drop(request_dir);
 
     recorder.record(
         "combine.response_returned",
         Level::Info,
-        "returning the combined file to the caller",
+        "returning the generated artifact manifest to the caller",
     );
     let capability = diagnostics.issue(&request_id, recorder.into_events());
 
     let mut response = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .header(
-            header::CONTENT_DISPOSITION,
-            "attachment; filename=\"combined.txt\"",
-        )
-        .body(Body::from(combined))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&ArtifactListResponse {
+                artifacts: artifact_list,
+            })
+            .expect("artifact manifest is serializable"),
+        ))
         .expect("response with well-formed static headers");
     insert_capability_header(&mut response, &capability);
     response

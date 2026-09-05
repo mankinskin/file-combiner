@@ -42,7 +42,7 @@ pub(crate) fn clear_file_input(id: &str) {
     }
 }
 
-pub(crate) fn trigger_download(bytes: &[u8]) {
+pub(crate) fn trigger_download(filename: &str, bytes: &[u8]) {
     let array = Uint8Array::from(bytes);
     let parts = Array::new();
     parts.push(&array);
@@ -61,7 +61,7 @@ pub(crate) fn trigger_download(bytes: &[u8]) {
             if let Ok(anchor) = document.create_element("a") {
                 if let Ok(anchor) = anchor.dyn_into::<HtmlAnchorElement>() {
                     anchor.set_href(&url);
-                    anchor.set_download("combined.txt");
+                    anchor.set_download(filename);
                     anchor.click();
                 }
             }

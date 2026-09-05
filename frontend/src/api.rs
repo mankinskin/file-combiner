@@ -6,7 +6,7 @@ use web_sys::{
     Response as WebResponse,
 };
 
-use crate::models::{Credential, DiagnosticsView, SourceState};
+use crate::models::{ArtifactList, Credential, DiagnosticsView, SourceState};
 
 const DIAGNOSTICS_CAPABILITY_HEADER: &str = "x-diagnostics-capability";
 
@@ -14,7 +14,7 @@ pub(crate) async fn submit_combine(
     credential: &Credential,
     first: &SourceState,
     second: &SourceState,
-) -> (Result<Vec<u8>, String>, Option<String>) {
+) -> (Result<ArtifactList, String>, Option<String>) {
     match submit_combine_inner(credential, first, second).await {
         Ok((bytes, capability)) => (Ok(bytes), capability),
         Err((message, capability)) => (Err(message), capability),
@@ -25,7 +25,7 @@ async fn submit_combine_inner(
     credential: &Credential,
     first: &SourceState,
     second: &SourceState,
-) -> Result<(Vec<u8>, Option<String>), (String, Option<String>)> {
+) -> Result<(ArtifactList, Option<String>), (String, Option<String>)> {
     let form = FormData::new().map_err(|_| ("Failed to build the request".to_string(), None))?;
     append_file(&form, "first", first).map_err(|message| (message, None))?;
     append_file(&form, "second", second).map_err(|message| (message, None))?;
@@ -48,7 +48,7 @@ async fn submit_combine_inner(
         .flatten();
 
     if response.ok() {
-        let buffer = JsFuture::from(response.array_buffer().map_err(|_| {
+        let text_value = JsFuture::from(response.text().map_err(|_| {
             (
                 "Failed to read the response".to_string(),
                 capability.clone(),
@@ -61,7 +61,19 @@ async fn submit_combine_inner(
                 capability.clone(),
             )
         })?;
-        Ok((Uint8Array::new(&buffer).to_vec(), capability))
+        let text = text_value.as_string().ok_or_else(|| {
+            (
+                "Failed to read the response".to_string(),
+                capability.clone(),
+            )
+        })?;
+        let manifest = serde_json::from_str(&text).map_err(|_| {
+            (
+                "Received an unexpected response".to_string(),
+                capability.clone(),
+            )
+        })?;
+        Ok((manifest, capability))
     } else {
         let json = JsFuture::from(
             response
@@ -76,6 +88,31 @@ async fn submit_combine_inner(
             .unwrap_or_else(|| "Request failed".to_string());
         Err((message, capability))
     }
+}
+
+pub(crate) async fn download_artifact(
+    credential: &Credential,
+    artifact_url: &str,
+) -> Result<Vec<u8>, String> {
+    let headers = authorization_headers(credential)?;
+    let options = RequestInit::new();
+    options.set_method("GET");
+    options.set_mode(RequestMode::SameOrigin);
+    options.set_headers(&headers);
+    let request = Request::new_with_str_and_init(artifact_url, &options)
+        .map_err(|_| "Failed to build the download request".to_string())?;
+    let response = send_request(&request).await?;
+    if !response.ok() {
+        return Err("Failed to download the artifact".to_string());
+    }
+    let buffer = JsFuture::from(
+        response
+            .array_buffer()
+            .map_err(|_| "Failed to read the artifact".to_string())?,
+    )
+    .await
+    .map_err(|_| "Failed to read the artifact".to_string())?;
+    Ok(Uint8Array::new(&buffer).to_vec())
 }
 
 pub(crate) async fn fetch_diagnostics(

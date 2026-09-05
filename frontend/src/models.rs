@@ -88,16 +88,23 @@ impl Stage {
 }
 
 #[derive(Clone, PartialEq)]
-pub(crate) struct CombineResult {
-    pub(crate) preview: String,
-    pub(crate) bytes: Vec<u8>,
+pub(crate) struct GeneratedArtifact {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) format: String,
+    pub(crate) download_url: String,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize)]
+pub(crate) struct ArtifactList {
+    pub(crate) artifacts: Vec<GeneratedArtifact>,
 }
 
 #[derive(Clone, PartialEq)]
 pub(crate) enum RequestState {
     Idle,
     Submitting(Stage),
-    Success(CombineResult),
+    Success(ArtifactList),
     Failed(String),
 }
 

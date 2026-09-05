@@ -6,12 +6,11 @@ mod file_slot;
 mod models;
 mod text;
 
-use api::{fetch_diagnostics, submit_combine};
+use api::{download_artifact, fetch_diagnostics, submit_combine};
 use browser::{clear_file_input, focus_element, next_frame, trigger_download};
 use file_slot::FileSlot;
 use models::{
-    CombineResult, Credential, CredentialMode, DiagnosticsView, RequestState, SourceState, Stage,
-    MAX_FILE_BYTES,
+    Credential, CredentialMode, DiagnosticsView, RequestState, SourceState, Stage, MAX_FILE_BYTES,
 };
 use text::normalize_text;
 
@@ -60,19 +59,9 @@ fn App() -> Element {
             diagnostics.set(None);
             let (result, capability) = submit_combine(&credential_value, &first, &second).await;
             match result {
-                Ok(bytes) => {
+                Ok(artifacts) => {
                     state.set(RequestState::Submitting(Stage::PreparingDownload));
-                    match std::str::from_utf8(&bytes) {
-                        Ok(text) => state.set(RequestState::Success(CombineResult {
-                            preview: normalize_text(text),
-                            bytes,
-                        })),
-                        Err(_) => {
-                            state.set(RequestState::Failed(
-                                "Received an unexpected response".to_string(),
-                            ));
-                        }
-                    }
+                    state.set(RequestState::Success(artifacts));
                 }
                 Err(message) => state.set(RequestState::Failed(message)),
             }
@@ -99,29 +88,12 @@ fn App() -> Element {
         focus_element("token-input");
     };
 
-    let on_download = move |_| {
-        if let RequestState::Success(result) = &*state.read() {
-            trigger_download(&result.bytes);
-        }
-        credential_mode.set(CredentialMode::SharedKey);
-        shared_key.set(String::new());
-        group_name.set(String::new());
-        group_password.set(String::new());
-        direct_pat.set(String::new());
-        first_source.set(SourceState::default());
-        second_source.set(SourceState::default());
-        state.set(RequestState::Idle);
-        diagnostics.set(None);
-        clear_file_input("first-file");
-        clear_file_input("second-file");
-    };
-
     rsx! {
         div { class: "app-shell",
             main { class: "workspace",
                 header { class: "workspace-header",
                     h1 { "file-combiner" }
-                    p { "Choose an access method, then paste or upload a sales guide template and customer information to generate a tailored guide." }
+                    p { "Choose an access method, then paste or upload a conversation template and person information to generate tailored preparation artifacts." }
                     div { class: "credential-row",
                         label { r#for: "credential-mode", "Access method" }
                         select {
@@ -188,8 +160,8 @@ fn App() -> Element {
                     }
                 }
                 div { class: "sources-grid",
-                    FileSlot { label: "Sales guide template", slot_id: "first-file", source: first_source }
-                    FileSlot { label: "Customer information", slot_id: "second-file", source: second_source }
+                    FileSlot { label: "Conversation template", slot_id: "first-file", source: first_source }
+                    FileSlot { label: "Person information", slot_id: "second-file", source: second_source }
                 }
                 div { class: "actions-row",
                     button {
@@ -232,16 +204,38 @@ fn App() -> Element {
                     }
                 }
                 if let RequestState::Success(result) = state.read().clone() {
-                    section { class: "result-panel", role: "region", "aria-label": "Combined result",
-                        h2 { "Personalized guide" }
-                        div {
-                            class: "file-preview",
-                            tabindex: "0",
-                            role: "region",
-                            "aria-label": "Combined result preview",
-                            pre { "{result.preview}" }
+                    section { class: "result-panel", role: "region", "aria-label": "Generated artifacts",
+                        h2 { "Generated artifacts" }
+                        ul { class: "artifact-list",
+                            for artifact in result.artifacts {
+                                {
+                                    let credential = credential.clone();
+                                    let artifact_url = artifact.download_url.clone();
+                                    let filename = format!("{}.txt", artifact.id);
+                                    let label = format!("Download {}", artifact.name);
+                                    rsx! {
+                                        li { key: "{artifact.id}",
+                                            span { "{artifact.name} ({artifact.format})" }
+                                            button {
+                                                class: "primary",
+                                                onclick: move |_| {
+                                                    let credential = credential.clone();
+                                                    let artifact_url = artifact_url.clone();
+                                                    let filename = filename.clone();
+                                                    spawn(async move {
+                                                        match download_artifact(&credential, &artifact_url).await {
+                                                            Ok(bytes) => trigger_download(&filename, &bytes),
+                                                            Err(message) => state.set(RequestState::Failed(message)),
+                                                        }
+                                                    });
+                                                },
+                                                "{label}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        button { class: "primary", onclick: on_download, "Download guide" }
                     }
                 }
             }

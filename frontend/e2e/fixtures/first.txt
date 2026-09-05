@@ -1,1 +1,20 @@
-first fixture content
+---
+version: 1
+conversation:
+	context: first meeting
+	type: advisory
+	subject: retirement planning
+role: financial adviser
+personalization:
+	- goals
+artifacts:
+	- name: preparation-brief
+		format: markdown
+		sections:
+			- Priorities
+	- name: question-list
+		format: markdown
+		sections:
+			- Questions
+---
+# Preparation brief
