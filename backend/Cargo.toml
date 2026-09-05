@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-agent-builder = { path = "../../agent-builder" }
+agent-builder = { git = "ssh://git@github.com/mankinskin/agent-builder" }
 axum = { version = "0.7", features = ["multipart"] }
 base64 = "0.22"
 hyper = { version = "1", features = ["server"] }
