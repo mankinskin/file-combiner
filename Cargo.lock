@@ -678,6 +678,7 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tokio",
  "tokio-rustls 0.25.0",
  "tower",
