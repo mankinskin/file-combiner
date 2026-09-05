@@ -69,6 +69,7 @@ pub trait CombineAgentBackend: Send + Sync {
         dir: &'a Path,
         request: &'a CombineRequest,
         diagnostics: &'a DiagnosticsRecorder<'a>,
+        direct_pat: Option<&'a str>,
     ) -> BoxFuture<'a, Result<PathBuf, CombineAgentError>>;
 }
 
@@ -243,17 +244,23 @@ impl CombineAgentBackend for RigCombineBackend {
         dir: &'a Path,
         request: &'a CombineRequest,
         diagnostics: &'a DiagnosticsRecorder<'a>,
+        direct_pat: Option<&'a str>,
     ) -> BoxFuture<'a, Result<PathBuf, CombineAgentError>> {
         Box::pin(async move {
             let created = CreatedFile::default();
             let tool = WriteCombinedFileTool::new(dir.to_path_buf(), created.clone());
 
-            let executor =
+            let mut executor =
                 RigAgentExecutor::from_template(&self.config, &self.template, |server| {
                     server.tool(tool)
                 })
                 .await
                 .map_err(|error| CombineAgentError::Execution(error.to_string()))?;
+
+            // If direct PAT is provided, set it for request-scoped authentication
+            if let Some(pat) = direct_pat {
+                executor = executor.with_direct_pat(pat.to_owned());
+            }
 
             let response = executor
                 .execute(AgentRequest::new(build_prompt(request), 10))
@@ -283,6 +290,7 @@ impl CombineAgentBackend for FakeCombineBackend {
         dir: &'a Path,
         request: &'a CombineRequest,
         diagnostics: &'a DiagnosticsRecorder<'a>,
+        _direct_pat: Option<&'a str>,
     ) -> BoxFuture<'a, Result<PathBuf, CombineAgentError>> {
         Box::pin(async move {
             let created = CreatedFile::default();
@@ -413,7 +421,12 @@ mod tests {
         };
 
         let path = backend
-            .combine(&dir, &request, &DiagnosticsRecorder::new("test-request"))
+            .combine(
+                &dir,
+                &request,
+                &DiagnosticsRecorder::new("test-request"),
+                None,
+            )
             .await
             .unwrap();
 
@@ -435,7 +448,12 @@ mod tests {
         };
 
         let path = backend
-            .combine(&dir, &request, &DiagnosticsRecorder::new("test-request"))
+            .combine(
+                &dir,
+                &request,
+                &DiagnosticsRecorder::new("test-request"),
+                None,
+            )
             .await
             .unwrap();
 

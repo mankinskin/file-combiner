@@ -15,11 +15,13 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 use crate::combinator_agent::{CombineAgentBackend, CombineAgentError, CombineRequest};
+use crate::config::GroupConfig;
 use crate::contract::{
     ErrorBody, ErrorCode, FIRST_FIELD_NAME, MAX_CONCURRENT_COMBINES, MAX_FILE_BYTES,
     MAX_PART_HEADER_BYTES, MAX_REQUEST_BYTES, REQUEST_TIMEOUT_SECS, SECOND_FIELD_NAME,
 };
 use crate::diagnostics::{DiagnosticsRecorder, DiagnosticsStore, Level};
+use base64::Engine;
 
 /// Header a caller must send, alongside `COMBINE_PROBE_TOKEN`, to use the
 /// internal probe path. The browser UI never sends this header.
@@ -28,10 +30,23 @@ pub const PROBE_HEADER: &str = "x-combine-probe";
 /// request, once one has been issued.
 pub const DIAGNOSTICS_CAPABILITY_HEADER: &str = "x-diagnostics-capability";
 
+/// Result of authorization check. Either a rejection response or successful
+/// authorization with optional direct PAT.
+#[derive(Debug)]
+enum AuthorizationResult {
+    /// Authorization failed; return this response to the client
+    Unauthorized(Response),
+    /// Authorization succeeded with standard bearer token (no direct PAT)
+    Authorized,
+    /// Authorization succeeded with a direct PAT for request-scoped usage
+    AuthorizedWithDirectPat(String),
+}
+
 #[derive(Clone)]
 pub struct AppState {
     bearer_token: Arc<str>,
     probe_token: Arc<str>,
+    group: Option<GroupConfig>,
     combine_slots: Arc<Semaphore>,
     backend: Arc<dyn CombineAgentBackend>,
     diagnostics: DiagnosticsStore,
@@ -43,9 +58,19 @@ impl AppState {
         probe_token: String,
         backend: Arc<dyn CombineAgentBackend>,
     ) -> Self {
+        AppState::with_group(bearer_token, probe_token, None, backend)
+    }
+
+    pub fn with_group(
+        bearer_token: String,
+        probe_token: String,
+        group: Option<GroupConfig>,
+        backend: Arc<dyn CombineAgentBackend>,
+    ) -> Self {
         AppState {
             bearer_token: bearer_token.into(),
             probe_token: probe_token.into(),
+            group,
             combine_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_COMBINES)),
             backend,
             diagnostics: DiagnosticsStore::new(),
@@ -114,8 +139,16 @@ async fn diagnostics(
     headers: HeaderMap,
     AxumPath(capability): AxumPath<String>,
 ) -> Response {
-    if let Some(response) = authorize(&state, &headers) {
-        return response;
+    // Diagnostics requires the configured bearer token, not direct PATs
+    match authorize(&state, &headers) {
+        AuthorizationResult::Unauthorized(response) => return response,
+        AuthorizationResult::Authorized => {}
+        AuthorizationResult::AuthorizedWithDirectPat(_) => {
+            return error_response(
+                ErrorCode::Unauthorized,
+                "diagnostics requires bearer token, not direct PAT",
+            )
+        }
     }
 
     match state.diagnostics.retrieve(&capability) {
@@ -130,34 +163,111 @@ fn error_response(code: ErrorCode, message: &str) -> Response {
 }
 
 /// Checks the bearer credential before any file content is processed.
-/// `COMBINE_BEARER_TOKEN` always authorizes; `COMBINE_PROBE_TOKEN` only
-/// authorizes when the internal probe header is also present. Returns the
-/// rejection response when unauthorized, `None` otherwise.
-fn authorize(state: &AppState, headers: &HeaderMap) -> Option<Response> {
-    let token = headers
+/// Supports three schemes:
+/// - `Bearer <token>`: `COMBINE_BEARER_TOKEN` always authorizes; `COMBINE_PROBE_TOKEN` only
+///   authorizes when the internal probe header is also present.
+/// - `Bearer <direct-pat>`: Any Bearer token that doesn't match the known tokens is treated
+///   as a direct Copilot PAT and authorized for request-scoped use.
+/// - `Group <base64(group_name:group_password)>`: validates against configured group credentials.
+/// Returns an AuthorizationResult indicating the outcome.
+fn authorize(state: &AppState, headers: &HeaderMap) -> AuthorizationResult {
+    let auth_header = headers
         .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
+        .and_then(|value| value.to_str().ok());
 
-    let Some(token) = token else {
-        return Some(error_response(
+    let Some(auth_header) = auth_header else {
+        return AuthorizationResult::Unauthorized(error_response(
             ErrorCode::Unauthorized,
             "missing credentials",
         ));
     };
 
-    if token == state.bearer_token.as_ref() {
-        return None;
+    // Check for Bearer scheme
+    if let Some(token) = auth_header.strip_prefix("Bearer ") {
+        if token == state.bearer_token.as_ref() {
+            return AuthorizationResult::Authorized;
+        }
+
+        if token == state.probe_token.as_ref() {
+            if headers.contains_key(PROBE_HEADER) {
+                return AuthorizationResult::Authorized;
+            } else {
+                // Probe token without the required probe header is rejected
+                return AuthorizationResult::Unauthorized(error_response(
+                    ErrorCode::Unauthorized,
+                    "probe token requires probe header",
+                ));
+            }
+        }
+
+        // If Bearer token doesn't match known tokens, treat it as a direct PAT
+        // and authorize it for request-scoped use
+        if !token.is_empty() {
+            return AuthorizationResult::AuthorizedWithDirectPat(token.to_owned());
+        }
+    }
+    // Check for Group scheme
+    else if let Some(credentials_b64) = auth_header.strip_prefix("Group ") {
+        // Decode base64 credentials
+        let credentials_bytes =
+            match base64::engine::general_purpose::STANDARD.decode(credentials_b64) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return AuthorizationResult::Unauthorized(error_response(
+                        ErrorCode::Unauthorized,
+                        "invalid credentials",
+                    ));
+                }
+            };
+
+        let credentials_str = match String::from_utf8(credentials_bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                return AuthorizationResult::Unauthorized(error_response(
+                    ErrorCode::Unauthorized,
+                    "invalid credentials",
+                ));
+            }
+        };
+
+        // Parse group_name:group_password
+        if let Some(colon_pos) = credentials_str.find(':') {
+            let (provided_group_name, provided_group_password) =
+                credentials_str.split_at(colon_pos);
+            let provided_group_password = &provided_group_password[1..];
+
+            if let Some(group_config) = &state.group {
+                // Use constant-time comparison to avoid timing attacks
+                if constant_time_eq(
+                    provided_group_name.as_bytes(),
+                    group_config.group_name.as_bytes(),
+                ) && constant_time_eq(
+                    provided_group_password.as_bytes(),
+                    group_config.group_password.as_bytes(),
+                ) {
+                    return AuthorizationResult::Authorized;
+                }
+            }
+        }
     }
 
-    if token == state.probe_token.as_ref() && headers.contains_key(PROBE_HEADER) {
-        return None;
-    }
-
-    Some(error_response(
+    AuthorizationResult::Unauthorized(error_response(
         ErrorCode::Unauthorized,
         "invalid credentials",
     ))
+}
+
+/// Constant-time comparison to prevent timing attacks.
+/// Returns true if both slices have the same bytes, false otherwise.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut result = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        result |= x ^ y;
+    }
+    result == 0
 }
 
 async fn combine(
@@ -165,9 +275,12 @@ async fn combine(
     headers: HeaderMap,
     multipart: Result<Multipart, MultipartRejection>,
 ) -> Response {
-    if let Some(response) = authorize(&state, &headers) {
-        return response;
-    }
+    let auth_result = authorize(&state, &headers);
+    let direct_pat = match auth_result {
+        AuthorizationResult::Unauthorized(response) => return response,
+        AuthorizationResult::Authorized => None,
+        AuthorizationResult::AuthorizedWithDirectPat(token) => Some(token),
+    };
 
     // The raw body limit is evaluated before multipart parsing begins.
     if let Some(content_length) = headers
@@ -192,7 +305,12 @@ async fn combine(
 
     run_with_deadline(
         permit,
-        run_combine(multipart, state.backend.clone(), state.diagnostics.clone()),
+        run_combine(
+            multipart,
+            state.backend.clone(),
+            state.diagnostics.clone(),
+            direct_pat,
+        ),
     )
     .await
 }
@@ -221,6 +339,7 @@ async fn run_combine(
     mut multipart: Multipart,
     backend: Arc<dyn CombineAgentBackend>,
     diagnostics: DiagnosticsStore,
+    direct_pat: Option<String>,
 ) -> Response {
     let mut first_file: Option<UploadedFile> = None;
     let mut second_file: Option<UploadedFile> = None;
@@ -341,7 +460,12 @@ async fn run_combine(
     );
 
     let combined_path = match backend
-        .combine(request_dir.path(), &combine_request, &recorder)
+        .combine(
+            request_dir.path(),
+            &combine_request,
+            &recorder,
+            direct_pat.as_deref(),
+        )
         .await
     {
         Ok(path) => {

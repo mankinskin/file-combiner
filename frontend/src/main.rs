@@ -525,7 +525,10 @@ fn append_file(form: &WebFormData, field: &str, source: &SourceState) -> Result<
     let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &blob_options)
         .map_err(|_| "Failed to build the request".to_string())?;
 
-    let name = source.name.clone().unwrap_or_else(|| format!("{field}.txt"));
+    let name = source
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("{field}.txt"));
     form.append_with_blob_and_filename(field, &blob, &name)
         .map_err(|_| "Failed to build the request".to_string())
 }

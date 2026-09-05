@@ -34,7 +34,54 @@ The backend reads these environment variables at startup and refuses to bind if 
 - `ASSETS_DIR` - directory containing the `combinator-agent` configuration and template (`agent-builder.toml`, `templates/combinator-agent.md`); defaults to `backend/assets`, which is correct for `cargo run` from the repository root. The container image sets this to `/app/assets`.
 - `COMBINE_AGENT_BACKEND` - set to `fake` to combine with plain concatenation instead of invoking the real Copilot-backed agent. Only for smoke tests (`scripts/smoke-browser.sh` and `scripts/smoke-container.sh` set this by default) that must not depend on live model credentials; leave unset in real deployments.
 
-`/api/combine` runs a thin Agent Builder-backed `combinator-agent` (see `backend/assets/`) that holds the server's own Copilot credential internally; it is never sent to the browser, logged, or exposed in responses. The agent may create exactly one server-selected, bounded UTF-8 file in a fresh request-scoped temporary directory, which is deleted once the response is served or the request otherwise ends. A successful or failed combine response also carries an `X-Diagnostics-Capability` header: an opaque 256-bit token. Presenting that capability together with `COMBINE_BEARER_TOKEN` at `GET /api/diagnostics/{capability}` returns bounded, redacted, structured records for that request only, reusable for 15 minutes and then permanently gone. An invalid bearer returns `401`; a missing, invalid, expired, or already-cleaned capability returns `404`. Diagnostics never include raw process output, upload contents, secrets, or tool arguments.
+### Group authentication (optional)
+
+The backend may be configured with group-based authentication in addition to bearer token authentication. When group authentication is enabled, browsers may authenticate using a group name and password instead of the shared bearer token. All three environment variables must be present and non-empty together, or all must be absent:
+
+- `COMBINE_GROUP_NAME` - group identifier (e.g., "sales", "engineering").
+- `COMBINE_GROUP_PASSWORD` - group password.
+- `COMBINE_GROUP_COPILOT_KEY` - Copilot credential specific to this group, used to combine files on behalf of that group.
+
+**Group authentication request:**
+
+```
+Authorization: Group <base64(group_name:group_password)>
+```
+
+Example (group `"acme"`, password `"secret123"`):
+
+```
+Authorization: Group YWNtZTpzZWNyZXQxMjM=
+```
+
+The backend validates the group name and password with constant-time comparison to prevent timing attacks. Unknown group names or invalid passwords return `401 Unauthorized`. The probe token (`COMBINE_PROBE_TOKEN`) remains invalid for group authentication and only works with `Authorization: Bearer`.
+
+### Direct PAT authentication (optional)
+
+As an alternative to bearer token or group authentication, you may authenticate using a direct GitHub Copilot Personal Access Token (PAT). This authentication method is useful for one-off requests without needing to pre-configure shared group credentials.
+
+**Important constraints:**
+- The PAT is **request-scoped only** — a fresh client is created for each request using the provided PAT, and the PAT is discarded immediately after the response is sent. It is **never cached, stored, or reused** across requests.
+- The PAT must be sent over HTTPS only; direct PAT requests over unencrypted HTTP are rejected.
+- The PAT is **redacted from all logs, diagnostics, and responses** — diagnostic records never include the raw token value.
+
+**Direct PAT authentication request:**
+
+```
+Authorization: Bearer <copilot-pat>
+```
+
+Example:
+
+```
+Authorization: Bearer ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+When the backend receives a `Bearer` token that does not match the configured `COMBINE_BEARER_TOKEN` or `COMBINE_PROBE_TOKEN`, it treats it as a direct Copilot PAT and authorizes the request for that token's lifetime only. The `/api/combine` endpoint then uses the provided PAT to authenticate the agent request against GitHub Copilot's API.
+
+Like bearer and group authentication, a direct PAT request still creates one server-selected, bounded UTF-8 file in a fresh request-scoped temporary directory, which is deleted once the response is served or the request otherwise ends.
+
+`/api/diagnostics` still requires `COMBINE_BEARER_TOKEN` for access, not the direct PAT — direct PAT diagnostics are served using the same shared bearer token as any other request.
 
 ## Prerequisites
 
@@ -86,7 +133,22 @@ The frontend and backend are served from a single Axum process, so there's one b
 
    By default this binds to `http://127.0.0.1:8080` and serves the frontend from `frontend/dist`.
 
+   **With group authentication enabled:**
+
+   ```bash
+   COMBINE_BEARER_TOKEN=my-local-token \
+   COMBINE_PROBE_TOKEN=my-local-probe-token \
+   COMBINE_GROUP_NAME=acme \
+   COMBINE_GROUP_PASSWORD=secret123 \
+   COMBINE_GROUP_COPILOT_KEY=group-copilot-key-xyz \
+   cargo run -p backend
+   ```
+
 3. Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in a browser. Enter the same value you set for `COMBINE_BEARER_TOKEN` in the header's **Access key** field, then paste or type text into the two source editors (or choose a first and second `.txt`/`.md` file, each under 1 MiB, to load their content into the editors), and click **Generate guide** to see the processing panel and, on success, the result preview and **Download guide** action.
+
+   **With group authentication:** instead of entering the bearer token, use the group credentials:
+   - Convert group name and password to base64: `base64 <<< "acme:secret123"` (produces `YWNtZTpzZWNyZXQxMjM=`)
+   - Enter that base64 string in the **Access key** field
 
 Re-run step 1 after any frontend change; the backend only needs restarting after a backend change (`STATIC_DIR` always points at the same `frontend/dist` folder built in step 1).
 
@@ -148,3 +210,78 @@ Before the first production deployment, an operator must:
 - Add a **Registry Credential** in Render's Workspace Settings → *Container Registry Credentials* (Registry: GitHub Container Registry, Username: `mankinskin`, Personal Access Token: the same value stored as `INFRA_GHCR_PAT`), then select it in this service's Settings → Advanced → *Registry Credential*. This is unrelated to the Secret File above: it authenticates Render's build machine to pull the private `infrastructure-base` image the Dockerfile's `FROM` line references, *before* any of this repo's own build steps run. Without it, every build fails immediately with `401 Unauthorized` fetching the GHCR token, even if the Secret File and every other secret are configured correctly.
 
 Note that Render's GitHub App connection (used to clone *this* repo, and any of its own Git submodules) does not extend to `agent-builder`: that dependency is fetched by `cargo`/`git` from inside the Docker build, an independent process Render's OAuth scope doesn't cover.
+
+## Production Deployment
+
+All deployments **require HTTPS**. Plaintext HTTP deployments are rejected by the smoke tests and blocked from production use.
+
+### Security Requirements
+
+- **HTTPS is mandatory** — the application rejects any plaintext HTTP deployment. Every request must arrive over HTTPS.
+- **TLS certificate management** — on Docker deployments with mounted TLS certificates, ensure certificates are non-expired and properly rotated before they expire. On Render or other platform deployments, platform-managed HTTPS is enabled by default.
+- **Credential redaction** — no credentials appear in logs, responses, or diagnostics output. The backend automatically redacts secrets from all diagnostic records. Environment variables such as `COMBINE_BEARER_TOKEN`, `COMBINE_PROBE_TOKEN`, `GITHUB_COPILOT_TOKEN`, and `COPILOT_API_KEY` are never logged, traced, or exposed through the `/api/diagnostics` endpoint.
+- **Request-scoped credentials** — direct PAT authentication (via `Authorization: Bearer <ghp_...>`) creates a request-scoped client that is discarded immediately after the response is sent. PATs are never cached, stored, or reused across requests.
+- **Probe token isolation** — the probe token (`COMBINE_PROBE_TOKEN`) is only valid for internal health checks and smoke tests; browser requests must use the bearer token or group credentials.
+
+### Deployment Variants
+
+#### Docker with Mounted TLS Certificates
+
+When deploying with Docker and mounted TLS certificates:
+
+1. Ensure your host has TLS certificates in a mounted volume (e.g., `/etc/tls/certs/` containing `server.crt` and `server.key`).
+2. Run the container with port binding and certificate mounts:
+   ```bash
+   docker run -d \
+     -p 443:8080 \
+     -v /etc/tls/certs:/tls:ro \
+     -e COMBINE_BEARER_TOKEN=<distinct-token> \
+     -e COMBINE_PROBE_TOKEN=<distinct-probe-token> \
+     -e GITHUB_COPILOT_TOKEN=<copilot-credential> \
+     file-combiner:latest
+   ```
+3. Configure your reverse proxy or load balancer to enforce HTTPS and forward requests to the container.
+4. Validate the deployment with:
+   ```bash
+   bash scripts/smoke-deploy.sh https://your-deployment-url <probe-token>
+   ```
+
+#### Render Platform (Platform-Managed HTTPS)
+
+When deploying to Render, HTTPS is managed automatically by the platform:
+
+1. Render assigns a `*.onrender.com` domain with a platform-managed certificate.
+2. All requests are served over HTTPS by default; plaintext HTTP is redirected.
+3. Set environment secrets in Render's *Environment* settings (never in the Dockerfile or source control):
+   - `COMBINE_BEARER_TOKEN` — distinct from probe token
+   - `COMBINE_PROBE_TOKEN` — for CI/CD smoke tests only
+   - `GITHUB_COPILOT_TOKEN` or `COPILOT_API_KEY` — live combine credential
+4. After deployment, run the smoke test to verify HTTPS enforcement and credential redaction:
+   ```bash
+   bash scripts/smoke-deploy.sh https://your-service.onrender.com <probe-token>
+   ```
+
+### Post-Deployment Validation
+
+Every deployment must pass the smoke test before traffic is routed to it:
+
+```bash
+bash scripts/smoke-deploy.sh <https-base-url> <probe-token> [<group-name> <group-password>]
+```
+
+The smoke test verifies:
+1. **HTTPS enforcement** — rejects plaintext `http://` URLs and validates the base URL uses HTTPS.
+2. **Health check** — `/healthz` endpoint returns 200 without authentication.
+3. **Probe token authentication** — probe-token combine requests return 200 and create diagnostics.
+4. **Group authentication** (if configured) — group-authenticated combine requests return 200.
+5. **Credential redaction** — diagnostics endpoint returns data without exposing any credentials or secret patterns.
+
+All five tests must pass before the deployment is considered successful. The CI/CD pipeline (`deploy-render` job) runs this test automatically post-deploy; for manual deployments, run it explicitly and confirm all tests pass before routing traffic.
+
+### Troubleshooting
+
+- **HTTPS enforcement failure**: Ensure `BASE_URL` parameter uses `https://` scheme. The smoke test intentionally rejects plaintext HTTP.
+- **Health check failure**: Verify the deployment is running and reachable at the provided URL.
+- **Probe token failure**: Confirm `COMBINE_PROBE_TOKEN` environment variable matches the value passed to the smoke test.
+- **Credential redaction failure**: Check logs for any credential patterns. The backend should redact all secrets automatically; if raw credentials appear, investigate the Rust backend code and redaction logic in `backend/src/diagnostics.rs`.
+- **Group authentication failure**: Verify `COMBINE_GROUP_NAME`, `COMBINE_GROUP_PASSWORD`, and `COMBINE_GROUP_COPILOT_KEY` are all set if group auth is required.
