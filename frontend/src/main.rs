@@ -9,10 +9,7 @@ mod text;
 use api::{download_artifact, fetch_diagnostics, submit_combine};
 use browser::{clear_file_input, focus_element, next_frame, trigger_download};
 use file_slot::FileSlot;
-use models::{
-    Credential, CredentialMode, DiagnosticsView, RequestState, SourceState, Stage, MAX_FILE_BYTES,
-};
-use text::normalize_text;
+use models::{Credential, CredentialMode, DiagnosticsView, RequestState, SourceState, Stage};
 
 fn main() {
     dioxus::launch(App);
@@ -47,8 +44,9 @@ fn App() -> Element {
         && !second_source.read().content.trim().is_empty()
         && !busy;
 
+    let submit_credential = credential.clone();
     let on_submit = move |_| {
-        let credential_value = credential.clone();
+        let credential_value = submit_credential.clone();
         let first = first_source.read().clone();
         let second = second_source.read().clone();
         spawn(async move {

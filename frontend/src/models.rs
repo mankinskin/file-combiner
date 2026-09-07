@@ -87,7 +87,7 @@ impl Stage {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, serde::Deserialize)]
 pub(crate) struct GeneratedArtifact {
     pub(crate) id: String,
     pub(crate) name: String,
