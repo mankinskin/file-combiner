@@ -60,13 +60,15 @@ impl Credential {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
     AccessValidation,
+    Analyzing,
     Combining,
     PreparingDownload,
 }
 
 impl Stage {
-    pub(crate) const ALL: [Self; 3] = [
+    pub(crate) const ALL: [Self; 4] = [
         Self::AccessValidation,
+        Self::Analyzing,
         Self::Combining,
         Self::PreparingDownload,
     ];
@@ -74,6 +76,7 @@ impl Stage {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::AccessValidation => "Access validation",
+            Self::Analyzing => "Analyzing uploaded artifacts",
             Self::Combining => "Combining",
             Self::PreparingDownload => "Preparing download",
         }
@@ -100,12 +103,95 @@ pub(crate) struct ArtifactList {
     pub(crate) artifacts: Vec<GeneratedArtifact>,
 }
 
+#[derive(Clone, PartialEq, serde::Deserialize)]
+pub(crate) struct LatentStage {
+    pub(crate) name: String,
+    pub(crate) purpose: Option<String>,
+    pub(crate) questions: Vec<String>,
+    pub(crate) information: Vec<String>,
+    pub(crate) target_aspects: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize)]
+pub(crate) struct LatentCustomer {
+    pub(crate) name: Option<String>,
+    pub(crate) situation: Vec<String>,
+    pub(crate) goals: Vec<String>,
+    pub(crate) constraints: Vec<String>,
+    pub(crate) known_information: Vec<String>,
+    pub(crate) customer_type: Option<String>,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize)]
+pub(crate) struct LatentRepresentation {
+    pub(crate) schema_version: u8,
+    pub(crate) source_kind: String,
+    pub(crate) title: String,
+    pub(crate) domain: Option<String>,
+    pub(crate) stages: Vec<LatentStage>,
+    pub(crate) customer: LatentCustomer,
+    pub(crate) motivations: Vec<String>,
+    pub(crate) questions: Vec<String>,
+    pub(crate) objections: Vec<String>,
+    pub(crate) tone: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize)]
+pub(crate) struct AnalysisResponse {
+    pub(crate) session_id: String,
+    pub(crate) complete: bool,
+    pub(crate) representations: Vec<LatentRepresentation>,
+    pub(crate) artifacts: Vec<GeneratedArtifact>,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize)]
+pub(crate) struct ApiErrorBody {
+    pub(crate) code: String,
+    pub(crate) message: String,
+    pub(crate) status: Option<u16>,
+    #[serde(default)]
+    pub(crate) details: Vec<String>,
+}
+
+impl ApiErrorBody {
+    pub(crate) fn local(message: impl Into<String>) -> Self {
+        Self {
+            code: "client_error".to_owned(),
+            message: message.into(),
+            status: None,
+            details: vec!["The browser could not complete or parse the request.".to_owned()],
+        }
+    }
+
+    pub(crate) fn from_response(
+        status: u16,
+        message: impl Into<String>,
+        details: Vec<String>,
+    ) -> Self {
+        Self {
+            code: "unexpected_response".to_owned(),
+            message: message.into(),
+            status: Some(status),
+            details,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct FailureDetail {
+    pub(crate) code: String,
+    pub(crate) message: String,
+    pub(crate) status: Option<u16>,
+    pub(crate) details: Vec<String>,
+    pub(crate) trace: Vec<String>,
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) enum RequestState {
     Idle,
     Submitting(Stage),
     Success(ArtifactList),
-    Failed(String),
+    Failed(FailureDetail),
 }
 
 #[cfg(test)]

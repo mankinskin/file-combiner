@@ -101,18 +101,27 @@ impl<'a> DiagnosticsRecorder<'a> {
 
     pub fn record(&self, kind: &'static str, level: Level, message: impl Into<String>) {
         let message = message.into();
-        let request_id = self.request_id;
-        match level {
-            Level::Info => tracing::info!(request_id, kind, "{message}"),
-            Level::Warn => tracing::warn!(request_id, kind, "{message}"),
-            Level::Error => tracing::error!(request_id, kind, "{message}"),
-        }
+        self.log(kind, level, &message);
         self.events.lock().unwrap().push(DiagnosticEvent::new(
             self.request_id,
             kind,
             level,
             message,
         ));
+    }
+
+    pub fn log_only(&self, kind: &'static str, level: Level, message: impl Into<String>) {
+        let message = redact(&message.into());
+        self.log(kind, level, &message);
+    }
+
+    fn log(&self, kind: &'static str, level: Level, message: &str) {
+        let request_id = self.request_id;
+        match level {
+            Level::Info => tracing::info!(request_id, kind, "{message}"),
+            Level::Warn => tracing::warn!(request_id, kind, "{message}"),
+            Level::Error => tracing::error!(request_id, kind, "{message}"),
+        }
     }
 
     /// Consumes the recorder, returning its events for storage.
@@ -294,5 +303,18 @@ mod tests {
     fn unknown_capability_returns_none() {
         let store = DiagnosticsStore::new();
         assert!(store.retrieve("does-not-exist").is_none());
+    }
+
+    #[test]
+    fn log_only_does_not_store_frontend_visible_diagnostics() {
+        let recorder = DiagnosticsRecorder::new("req-1");
+
+        recorder.log_only(
+            "combine.latent_analysis.model_response",
+            Level::Error,
+            "raw model response that must stay in container logs",
+        );
+
+        assert!(recorder.into_events().is_empty());
     }
 }

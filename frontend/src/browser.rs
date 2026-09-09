@@ -3,10 +3,14 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, HtmlElement, Url};
 
+/// Yields one macrotask so a UI update (e.g. "Processing") can repaint
+/// before the next step runs. Uses `setTimeout`, not `requestAnimationFrame`:
+/// browsers suspend rAF entirely on a hidden/backgrounded page, which would
+/// hang this indefinitely and block the request that follows it.
 pub(crate) async fn next_frame() {
     let promise = Promise::new(&mut |resolve, _reject| {
         if let Some(window) = web_sys::window() {
-            let _ = window.request_animation_frame(&resolve);
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
         }
     });
     let _ = JsFuture::from(promise).await;

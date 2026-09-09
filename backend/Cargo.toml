@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 agent-builder = { git = "ssh://git@github.com/mankinskin/agent-builder", branch = "main" }
+anyhow = "1"
 axum = { version = "0.7", features = ["multipart"] }
 base64 = "0.22"
 hyper = { version = "1", features = ["server"] }

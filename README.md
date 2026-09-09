@@ -1,6 +1,8 @@
 # file-combiner
 
-Standalone Dioxus (frontend) and Axum (backend) application that turns an authenticated conversation template and person information into a template-defined preparation-artifact set. See the [template-agent roadmap](../transcripts/05-09-2026_file-combiner-template-agent/ROADMAP.md) for the current implementation route.
+Standalone Dioxus (frontend) and Axum (backend) application that turns an
+authenticated conversation template and person information into a
+backend-analyzed preparation-artifact set. See the [template-agent roadmap](../transcripts/05-09-2026_file-combiner-template-agent/ROADMAP.md) for the current implementation route.
 
 ## Quickstart
 
@@ -19,10 +21,11 @@ All four original waypoints, plus the browser UX reconciliation described in the
 - **Two always-editable sources.** The conversation-template and person-information panels are multiline text editors visible before a file is chosen. A user may paste or type UTF-8 text directly into either panel, or populate a panel from a `.txt` or `.md` file decoded with strict UTF-8.
 - **Normalized, never-hidden display.** Line endings are normalized to LF and non-printable control characters are silently dropped from the editor content; the UI never shows a placeholder glyph (e.g. `<0xEF><0xBF><0xBD>`, a shorthand for the Unicode replacement character) for characters that were removed. A file exceeding the 1 MiB limit, or one that fails strict UTF-8 decoding, is rejected with an accessible error and leaves the editor's existing content untouched.
 - **Compact, editing-first layout.** The access key lives in the page header, not the action area, and the two source editors take up most of the page so there's more room to read and edit long text. When present, the diagnostics panel appears as a sidebar next to the main editing column on wide viewports, and stacks below it on narrow ones. The subtle dotted background is bounded to the workspace content rather than filling the whole viewport.
-- **Template contract.** The conversation template starts with version-one YAML front matter declaring `conversation`, `role`, non-empty `personalization`, and one to eight uniquely named `artifacts`. Each artifact declares a `name`, `format`, and non-empty `sections` list. A malformed contract is rejected rather than producing invented output.
+- **Latent representation pipeline.** `/api/analyze` accepts one arbitrary-form template or person-profile artifact at a time. The backend converts each upload into a versioned global latent representation, retains partial state for fifteen minutes, and returns available representations immediately. Independent inputs may be submitted in either order.
+- **Server-owned instructions.** Domain instructions are versioned files under `backend/assets/instructions/`. Uploaded content is never allowed to select or override those files.
 - **Privacy boundary.** Local editing and validation never leave the browser. The workspace displays only processing state and the generated artifact list; raw backend logs, request headers, credentials, server paths, and request data remain hidden.
 - **Retry and reset.** A failed request keeps the access key and both editor values for retry. Reset or page reload clears local state. Downloading one artifact leaves the other artifacts and editor values available.
-- **Result.** `/api/combine` returns a manifest of artifact IDs, template names, formats, and download URLs. Each artifact is fetched through an authenticated individual download URL. The server retains only generated output bytes in a bounded in-memory store for five minutes and removes staged uploads immediately after creating the manifest.
+- **Result.** Once both analyzed inputs are present, `/api/analyze` returns a manifest containing at least `closer-overview` and `individualized-conversation-guide`. Each artifact is fetched through an authenticated individual session download URL. The legacy `/api/combine` endpoint remains available for compatibility.
 
 ## Runtime configuration
 
@@ -34,6 +37,13 @@ The backend reads these environment variables at startup and refuses to bind if 
 - `STATIC_DIR` - directory containing the built frontend assets served at every path other than `/healthz` and `/api/*` (defaults to `frontend/dist`).
 - `ASSETS_DIR` - directory containing the `combinator-agent` configuration and template (`agent-builder.toml`, `templates/combinator-agent.md`); defaults to `backend/assets`, which is correct for `cargo run` from the repository root. The container image sets this to `/app/assets`.
 - `COMBINE_AGENT_BACKEND` - set to `fake` to create deterministic placeholder content for every artifact declared by the template instead of invoking the real Copilot-backed agent. Only for smoke tests (`scripts/smoke-browser.sh` and `scripts/smoke-container.sh` set this by default) that must not depend on live model credentials; leave unset in real deployments.
+
+The backend test suite does not use `FakeCombineBackend` for its primary
+application-path coverage. Integration tests inject `MockCombineBackend` with
+predefined latent-representation fixtures. The mock exercises the same HTTP,
+session, validation, combination, and download path as the deployed backend;
+only model-shaped responses are replaced. `FakeCombineBackend` remains a
+simple smoke-test adapter.
 
 ### Group authentication (optional)
 
@@ -145,7 +155,7 @@ The frontend and backend are served from a single Axum process, so there's one b
    cargo run -p backend
    ```
 
-3. Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in a browser. Enter the `COMBINE_BEARER_TOKEN` value in the **Access key** field, supply a version-one conversation template and person information, and select **Generate guide**. The resulting artifact list provides one authenticated download action per declared artifact.
+3. Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in a browser. Enter the `COMBINE_BEARER_TOKEN` value in the **Access key** field, supply a conversation template and person information, and select **Generate guide**. The UI first shows the latent representations, then provides authenticated downloads for the generated overview and individualized guide.
 
    **With group authentication:** instead of entering the bearer token, use the group credentials:
    - Convert group name and password to base64: `base64 <<< "acme:secret123"` (produces `YWNtZTpzZWNyZXQxMjM=`)

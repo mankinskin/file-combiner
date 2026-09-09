@@ -104,10 +104,13 @@ async fn error_code(response: axum::response::Response) -> String {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let value: Value = serde_json::from_slice(&body).unwrap();
     let obj = value.as_object().unwrap();
-    assert_eq!(
-        obj.len(),
-        2,
-        "error body must contain only code and message"
+    assert!(obj.contains_key("code"));
+    assert!(obj.contains_key("message"));
+    assert!(obj.contains_key("status"));
+    assert!(obj.contains_key("details"));
+    assert!(
+        !obj.get("details").unwrap().as_array().unwrap().is_empty(),
+        "error body must include descriptive details"
     );
     obj.get("code").unwrap().as_str().unwrap().to_string()
 }

@@ -79,13 +79,14 @@ async fn combine_issues_diagnostics_capability_with_structured_redacted_records(
         }
     }
 
-    // Invalid bearer is unauthorized regardless of capability validity.
+    // A direct PAT caller can also read a capability-bearing diagnostics
+    // response; otherwise Direct PAT failures lose their backend trace.
     let response = app
         .clone()
         .oneshot(diagnostics_request(Some("wrong-token"), &capability))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::OK);
 
     // An unrelated, well-formed capability never matches this request's records.
     let response = app

@@ -3,6 +3,7 @@ mod artifact_store;
 mod auth;
 mod handler;
 mod pipeline;
+mod session_store;
 
 use std::sync::Arc;
 
@@ -16,7 +17,9 @@ use crate::contract::MAX_CONCURRENT_COMBINES;
 use crate::diagnostics::DiagnosticsStore;
 
 use artifact_store::ArtifactStore;
+use handler::{analyze, download_session_artifact};
 use handler::{combine, diagnostics, download_artifact};
+use session_store::AnalysisSessionStore;
 
 /// Header a caller must send, alongside `COMBINE_PROBE_TOKEN`, to use the
 /// internal probe path. The browser UI never sends this header.
@@ -34,6 +37,7 @@ pub struct AppState {
     backend: Arc<dyn CombineAgentBackend>,
     diagnostics: DiagnosticsStore,
     artifacts: ArtifactStore,
+    analysis_sessions: AnalysisSessionStore,
 }
 
 impl AppState {
@@ -59,6 +63,7 @@ impl AppState {
             backend,
             diagnostics: DiagnosticsStore::new(),
             artifacts: ArtifactStore::new(),
+            analysis_sessions: AnalysisSessionStore::new(),
         }
     }
 
@@ -67,14 +72,27 @@ impl AppState {
     pub fn combine_slots(&self) -> &Arc<Semaphore> {
         &self.combine_slots
     }
+
+    fn analysis_sessions(&self) -> &AnalysisSessionStore {
+        &self.analysis_sessions
+    }
+
+    fn backend(&self) -> &Arc<dyn CombineAgentBackend> {
+        &self.backend
+    }
 }
 
 pub fn routes(state: AppState) -> Router {
     Router::new()
         .route("/api/combine", post(combine))
+        .route("/api/analyze", post(analyze))
         .route(
             "/api/artifacts/:request_id/:artifact_id",
             get(download_artifact),
+        )
+        .route(
+            "/api/sessions/:session_id/artifacts/:artifact_id",
+            get(download_session_artifact),
         )
         .route("/api/diagnostics/:capability", get(diagnostics))
         .with_state(state)

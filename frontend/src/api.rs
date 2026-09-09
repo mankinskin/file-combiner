@@ -1,93 +1,131 @@
-use js_sys::{Array, Reflect, Uint8Array};
-use wasm_bindgen::{JsCast, JsValue};
+use js_sys::{Array, Uint8Array};
+use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     Blob, BlobPropertyBag, FormData, Headers, Request, RequestInit, RequestMode,
     Response as WebResponse,
 };
 
-use crate::models::{ArtifactList, Credential, DiagnosticsView, SourceState};
+use crate::models::{AnalysisResponse, ApiErrorBody, Credential, DiagnosticsView, SourceState};
 
 const DIAGNOSTICS_CAPABILITY_HEADER: &str = "x-diagnostics-capability";
 
-pub(crate) async fn submit_combine(
+pub(crate) async fn submit_analysis(
     credential: &Credential,
-    first: &SourceState,
-    second: &SourceState,
-) -> (Result<ArtifactList, String>, Option<String>) {
-    match submit_combine_inner(credential, first, second).await {
-        Ok((bytes, capability)) => (Ok(bytes), capability),
+    kind: &str,
+    source: &SourceState,
+    session_id: Option<&str>,
+) -> (Result<AnalysisResponse, ApiErrorBody>, Option<String>) {
+    match submit_analysis_inner(credential, kind, source, session_id).await {
+        Ok((response, capability)) => (Ok(response), capability),
         Err((message, capability)) => (Err(message), capability),
     }
 }
 
-async fn submit_combine_inner(
+async fn submit_analysis_inner(
     credential: &Credential,
-    first: &SourceState,
-    second: &SourceState,
-) -> Result<(ArtifactList, Option<String>), (String, Option<String>)> {
-    let form = FormData::new().map_err(|_| ("Failed to build the request".to_string(), None))?;
-    append_file(&form, "first", first).map_err(|message| (message, None))?;
-    append_file(&form, "second", second).map_err(|message| (message, None))?;
-    let headers = authorization_headers(credential).map_err(|message| (message, None))?;
-
+    kind: &str,
+    source: &SourceState,
+    session_id: Option<&str>,
+) -> Result<(AnalysisResponse, Option<String>), (ApiErrorBody, Option<String>)> {
+    let form =
+        FormData::new().map_err(|_| (ApiErrorBody::local("Failed to build the request"), None))?;
+    form.append_with_str("kind", kind)
+        .map_err(|_| (ApiErrorBody::local("Failed to build the request"), None))?;
+    if let Some(session_id) = session_id {
+        form.append_with_str("session_id", session_id)
+            .map_err(|_| (ApiErrorBody::local("Failed to build the request"), None))?;
+    }
+    append_file(&form, "artifact", source)
+        .map_err(|message| (ApiErrorBody::local(message), None))?;
+    let headers = authorization_headers(credential)
+        .map_err(|message| (ApiErrorBody::local(message), None))?;
     let options = RequestInit::new();
     options.set_method("POST");
     options.set_mode(RequestMode::SameOrigin);
     options.set_headers(&headers);
     options.set_body(&form);
-    let request = Request::new_with_str_and_init("/api/combine", &options)
-        .map_err(|_| ("Failed to build the request".to_string(), None))?;
+    let request = Request::new_with_str_and_init("/api/analyze", &options)
+        .map_err(|_| (ApiErrorBody::local("Failed to build the request"), None))?;
     let response = send_request(&request)
         .await
-        .map_err(|message| (message, None))?;
+        .map_err(|message| (ApiErrorBody::local(message), None))?;
     let capability = response
         .headers()
         .get(DIAGNOSTICS_CAPABILITY_HEADER)
         .ok()
         .flatten();
-
-    if response.ok() {
-        let text_value = JsFuture::from(response.text().map_err(|_| {
-            (
-                "Failed to read the response".to_string(),
-                capability.clone(),
-            )
-        })?)
-        .await
-        .map_err(|_| {
-            (
-                "Failed to read the response".to_string(),
-                capability.clone(),
-            )
-        })?;
-        let text = text_value.as_string().ok_or_else(|| {
-            (
-                "Failed to read the response".to_string(),
-                capability.clone(),
-            )
-        })?;
-        let manifest = serde_json::from_str(&text).map_err(|_| {
-            (
-                "Received an unexpected response".to_string(),
-                capability.clone(),
-            )
-        })?;
-        Ok((manifest, capability))
-    } else {
-        let json = JsFuture::from(
-            response
-                .json()
-                .map_err(|_| ("Request failed".to_string(), capability.clone()))?,
+    let text = JsFuture::from(response.text().map_err(|_| {
+        (
+            ApiErrorBody::local("Failed to read the analysis response"),
+            capability.clone(),
         )
-        .await
-        .map_err(|_| ("Request failed".to_string(), capability.clone()))?;
-        let message = Reflect::get(&json, &JsValue::from_str("message"))
-            .ok()
-            .and_then(|value| value.as_string())
-            .unwrap_or_else(|| "Request failed".to_string());
-        Err((message, capability))
+    })?)
+    .await
+    .map_err(|_| {
+        (
+            ApiErrorBody::local("Failed to read the analysis response"),
+            capability.clone(),
+        )
+    })?
+    .as_string()
+    .ok_or_else(|| {
+        (
+            ApiErrorBody::local("Failed to read the analysis response"),
+            capability.clone(),
+        )
+    })?;
+    if !response.ok() {
+        let status = response.status();
+        let error = serde_json::from_str::<ApiErrorBody>(&text).unwrap_or_else(|_| {
+            ApiErrorBody::from_response(
+                status,
+                "Request failed",
+                vec![format!("Raw response body: {text}")],
+            )
+        });
+        return Err((error, capability));
     }
+    let parsed = serde_json::from_str(&text).map_err(|_| {
+        (
+            ApiErrorBody::from_response(
+                response.status(),
+                "Received an unexpected analysis response",
+                vec![format!("Raw response body: {text}")],
+            ),
+            capability.clone(),
+        )
+    })?;
+    Ok((parsed, capability))
+}
+
+pub(crate) async fn fetch_analysis_diagnostics(
+    credential: &Credential,
+    capability: &str,
+) -> Result<DiagnosticsView, String> {
+    let headers = authorization_headers(credential)?;
+    let options = RequestInit::new();
+    options.set_method("GET");
+    options.set_mode(RequestMode::SameOrigin);
+    options.set_headers(&headers);
+    let url = format!("/api/diagnostics/{capability}");
+    let request = Request::new_with_str_and_init(&url, &options)
+        .map_err(|_| "Failed to build the request".to_string())?;
+    let response = send_request(&request).await?;
+    if !response.ok() {
+        return Err("Failed to load diagnostics".to_string());
+    }
+    let text_value = JsFuture::from(
+        response
+            .text()
+            .map_err(|_| "Failed to read diagnostics".to_string())?,
+    )
+    .await
+    .map_err(|_| "Failed to read diagnostics".to_string())?;
+    let text = text_value
+        .as_string()
+        .ok_or_else(|| "Failed to read diagnostics".to_string())?;
+    serde_json::from_str(&text).map_err(|_| "Failed to parse diagnostics".to_string())
 }
 
 pub(crate) async fn download_artifact(
@@ -113,36 +151,6 @@ pub(crate) async fn download_artifact(
     .await
     .map_err(|_| "Failed to read the artifact".to_string())?;
     Ok(Uint8Array::new(&buffer).to_vec())
-}
-
-pub(crate) async fn fetch_diagnostics(
-    credential: &Credential,
-    capability: &str,
-) -> Result<DiagnosticsView, String> {
-    let headers = authorization_headers(credential)?;
-    let options = RequestInit::new();
-    options.set_method("GET");
-    options.set_mode(RequestMode::SameOrigin);
-    options.set_headers(&headers);
-    let url = format!("/api/diagnostics/{capability}");
-    let request = Request::new_with_str_and_init(&url, &options)
-        .map_err(|_| "Failed to build the request".to_string())?;
-    let response = send_request(&request).await?;
-    if !response.ok() {
-        return Err("Failed to load diagnostics".to_string());
-    }
-
-    let text_value = JsFuture::from(
-        response
-            .text()
-            .map_err(|_| "Failed to read diagnostics".to_string())?,
-    )
-    .await
-    .map_err(|_| "Failed to read diagnostics".to_string())?;
-    let text = text_value
-        .as_string()
-        .ok_or_else(|| "Failed to read diagnostics".to_string())?;
-    serde_json::from_str(&text).map_err(|_| "Failed to parse diagnostics".to_string())
 }
 
 fn authorization_headers(credential: &Credential) -> Result<Headers, String> {

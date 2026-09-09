@@ -18,7 +18,7 @@ use crate::contract::{
 use crate::diagnostics::{DiagnosticsRecorder, DiagnosticsStore, Level};
 
 use super::artifact_store::{ArtifactListResponse, ArtifactStore};
-use super::handler::error_response;
+use super::handler::{error_response, error_response_with_details};
 use super::DIAGNOSTICS_CAPABILITY_HEADER;
 
 /// A fresh, request-scoped temporary directory. Its contents (staged
@@ -213,7 +213,12 @@ pub(super) async fn run_combine(
                 CombineAgentError::InvalidTemplate(detail) => {
                     format!("the template contract is invalid: {detail}")
                 }
-                CombineAgentError::Execution(_) => "the combine agent failed to run".to_owned(),
+                CombineAgentError::Execution(_) => {
+                    "Artifact generation failed while invoking the configured model backend. See details and diagnostics for the backend error.".to_owned()
+                }
+                CombineAgentError::ModelUnauthenticated(_) => {
+                    "Copilot authentication is not configured on the server. Set GITHUB_COPILOT_TOKEN or COPILOT_API_KEY.".to_owned()
+                }
                 CombineAgentError::NoFileCreated => {
                     "the combine agent did not produce a file".to_owned()
                 }
@@ -228,7 +233,18 @@ pub(super) async fn run_combine(
                 format!("attempted to generate artifacts with the configured combine backend; failed: {error}"),
             );
             let capability = diagnostics.issue(&request_id, recorder.into_events());
-            let mut response = error_response(ErrorCode::CombineFailed, &message);
+            let code = match error {
+                CombineAgentError::ModelUnauthenticated(_) => ErrorCode::ModelUnauthenticated,
+                _ => ErrorCode::CombineFailed,
+            };
+            let mut response = error_response_with_details(
+                code,
+                &message,
+                [
+                    format!("Backend error: {error}"),
+                    format!("Diagnostics capability: {capability}"),
+                ],
+            );
             insert_capability_header(&mut response, &capability);
             return response;
         }
@@ -258,9 +274,13 @@ pub(super) async fn run_combine(
                 format!("attempted to retain generated artifacts; failed: {error}"),
             );
             let capability = diagnostics.issue(&request_id, recorder.into_events());
-            let mut response = error_response(
+            let mut response = error_response_with_details(
                 ErrorCode::CombineFailed,
                 "failed to retain generated artifacts",
+                [
+                    format!("Artifact retention error: {error}"),
+                    format!("Diagnostics capability: {capability}"),
+                ],
             );
             insert_capability_header(&mut response, &capability);
             return response;
@@ -290,7 +310,7 @@ pub(super) async fn run_combine(
     response
 }
 
-fn insert_capability_header(response: &mut Response, capability: &str) {
+pub(super) fn insert_capability_header(response: &mut Response, capability: &str) {
     if let Ok(value) = capability.parse() {
         response.headers_mut().insert(
             HeaderName::from_static(DIAGNOSTICS_CAPABILITY_HEADER),

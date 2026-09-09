@@ -30,7 +30,13 @@ fi
 
 cd "$REPO_ROOT"
 export DOCKER_BUILDKIT=1
-docker build --ssh default -t "$IMAGE" .
+# Docker Desktop's Windows file sharing can report a `COPY . .` layer as
+# unchanged even after a source edit, silently reusing a stale `planner`/
+# `builder` layer (and every step after it) instead of recompiling. Force
+# those two source-copying stages to always re-run; the slow `deps-*`
+# dependency-cook layers, keyed only on Cargo.lock/recipe.json, still cache
+# normally.
+docker build --ssh default --no-cache-filter=planner,builder -t "$IMAGE" .
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 docker run -d --rm \
   --name "$CONTAINER_NAME" \
@@ -41,6 +47,7 @@ docker run -d --rm \
 
 for _ in $(seq 1 30); do
   if curl -sf "${BASE_URL}/healthz" >/dev/null; then
+    echo "File Combiner server is available at ${BASE_URL}"
     exit 0
   fi
   sleep 1

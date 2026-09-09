@@ -213,6 +213,31 @@ textarea:focus-visible,
   font-size: 0.85rem;
 }
 
+.request-error {
+  flex: 1 1 100%;
+  background: #fff5f5;
+  border: 1px solid #e3b6b6;
+  border-radius: var(--radius);
+  padding: var(--space-3);
+}
+
+.request-error-message {
+  margin: 0 0 var(--space-2);
+  font-weight: 700;
+}
+
+.request-error-details,
+.request-error-trace {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-4);
+}
+
+.request-error-details li,
+.request-error-trace li {
+  margin-bottom: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
 .actions-row {
   display: flex;
   align-items: center;

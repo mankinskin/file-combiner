@@ -6,13 +6,71 @@ mod file_slot;
 mod models;
 mod text;
 
-use api::{download_artifact, fetch_diagnostics, submit_combine};
+use api::{download_artifact, fetch_analysis_diagnostics, submit_analysis};
 use browser::{clear_file_input, focus_element, next_frame, trigger_download};
 use file_slot::FileSlot;
-use models::{Credential, CredentialMode, DiagnosticsView, RequestState, SourceState, Stage};
+use models::{
+    ApiErrorBody, Credential, CredentialMode, DiagnosticsView, FailureDetail, LatentRepresentation,
+    RequestState, SourceState, Stage,
+};
 
 fn main() {
     dioxus::launch(App);
+}
+
+/// Turns a raw error message plus an optional diagnostics capability into a
+/// full attempted/failed trace, instead of leaving the generic server
+/// message as the only thing the user ever sees.
+async fn build_failure(
+    credential: &Credential,
+    error: ApiErrorBody,
+    capability: Option<String>,
+) -> (FailureDetail, Option<DiagnosticsView>) {
+    let mut details = error.details.clone();
+    let Some(capability) = capability else {
+        return (
+            FailureDetail {
+                code: error.code,
+                message: error.message,
+                status: error.status,
+                details,
+                trace: Vec::new(),
+            },
+            None,
+        );
+    };
+    match fetch_analysis_diagnostics(credential, &capability).await {
+        Ok(view) => {
+            let trace = view
+                .events
+                .iter()
+                .map(|event| event.message.clone())
+                .collect();
+            (
+                FailureDetail {
+                    code: error.code,
+                    message: error.message,
+                    status: error.status,
+                    details,
+                    trace,
+                },
+                Some(view),
+            )
+        }
+        Err(reason) => {
+            details.push(format!("Diagnostics lookup failed: {reason}"));
+            (
+                FailureDetail {
+                    code: error.code,
+                    message: error.message,
+                    status: error.status,
+                    details,
+                    trace: Vec::new(),
+                },
+                None,
+            )
+        }
+    }
 }
 
 /// Combines two authenticated text sources through same-origin `/api/combine`.
@@ -29,6 +87,7 @@ fn App() -> Element {
     let mut second_source = use_signal(SourceState::default);
     let mut state = use_signal(|| RequestState::Idle);
     let mut diagnostics = use_signal(|| Option::<DiagnosticsView>::None);
+    let mut representations = use_signal(Vec::<LatentRepresentation>::new);
 
     let credential = match *credential_mode.read() {
         CredentialMode::SharedKey => Credential::SharedKey(shared_key.read().clone()),
@@ -52,20 +111,62 @@ fn App() -> Element {
         spawn(async move {
             state.set(RequestState::Submitting(Stage::AccessValidation));
             next_frame().await;
-            state.set(RequestState::Submitting(Stage::Combining));
+            state.set(RequestState::Submitting(Stage::Analyzing));
             next_frame().await;
             diagnostics.set(None);
-            let (result, capability) = submit_combine(&credential_value, &first, &second).await;
-            match result {
-                Ok(artifacts) => {
-                    state.set(RequestState::Submitting(Stage::PreparingDownload));
-                    state.set(RequestState::Success(artifacts));
+            representations.set(Vec::new());
+            let (template, template_capability) =
+                submit_analysis(&credential_value, "template", &first, None).await;
+            match template {
+                Ok(template_response) => {
+                    representations.set(template_response.representations.clone());
+                    state.set(RequestState::Submitting(Stage::Combining));
+                    next_frame().await;
+                    let (profile, profile_capability) = submit_analysis(
+                        &credential_value,
+                        "profile",
+                        &second,
+                        Some(&template_response.session_id),
+                    )
+                    .await;
+                    match profile {
+                        Ok(response) => {
+                            representations.set(response.representations);
+                            if let Some(capability) = &profile_capability {
+                                if let Ok(view) =
+                                    fetch_analysis_diagnostics(&credential_value, capability).await
+                                {
+                                    diagnostics.set(Some(view));
+                                }
+                            }
+                            if response.complete {
+                                state.set(RequestState::Submitting(Stage::PreparingDownload));
+                                state.set(RequestState::Success(models::ArtifactList {
+                                    artifacts: response.artifacts,
+                                }));
+                            } else {
+                                state.set(RequestState::Failed(FailureDetail {
+                                    code: "analysis_incomplete".to_string(),
+                                    message: "The analysis session is incomplete".to_string(),
+                                    status: None,
+                                    details: vec!["The backend accepted both artifacts but did not return generated outputs.".to_string()],
+                                    trace: Vec::new(),
+                                }));
+                            }
+                        }
+                        Err(message) => {
+                            let (failure, view) =
+                                build_failure(&credential_value, message, profile_capability).await;
+                            diagnostics.set(view);
+                            state.set(RequestState::Failed(failure));
+                        }
+                    }
                 }
-                Err(message) => state.set(RequestState::Failed(message)),
-            }
-            if let Some(capability) = capability {
-                if let Ok(fetched) = fetch_diagnostics(&credential_value, &capability).await {
-                    diagnostics.set(Some(fetched));
+                Err(message) => {
+                    let (failure, view) =
+                        build_failure(&credential_value, message, template_capability).await;
+                    diagnostics.set(view);
+                    state.set(RequestState::Failed(failure));
                 }
             }
         });
@@ -81,6 +182,7 @@ fn App() -> Element {
         second_source.set(SourceState::default());
         state.set(RequestState::Idle);
         diagnostics.set(None);
+        representations.set(Vec::new());
         clear_file_input("first-file");
         clear_file_input("second-file");
         focus_element("token-input");
@@ -176,8 +278,26 @@ fn App() -> Element {
                         onclick: on_reset,
                         "Reset"
                     }
-                    if let RequestState::Failed(message) = &*state.read() {
-                        p { class: "request-error", role: "alert", "{message}" }
+                    if let RequestState::Failed(failure) = &*state.read() {
+                        div { class: "request-error", role: "alert",
+                            p { class: "request-error-message", "{failure.message}" }
+                            ul { class: "request-error-details",
+                                li { "Code: {failure.code}" }
+                                if let Some(status) = failure.status {
+                                    li { "HTTP status: {status}" }
+                                }
+                                for detail in &failure.details {
+                                    li { "{detail}" }
+                                }
+                            }
+                            if !failure.trace.is_empty() {
+                                ol { class: "request-error-trace",
+                                    for line in &failure.trace {
+                                        li { "{line}" }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 if let RequestState::Submitting(stage) = &*state.read() {
@@ -201,6 +321,34 @@ fn App() -> Element {
                         }
                     }
                 }
+                if !representations.read().is_empty() {
+                    section { class: "representation-panel", role: "region", "aria-label": "Latent representations",
+                        h2 { "Analysis representations" }
+                        for representation in representations.read().iter() {
+                            article { class: "representation-card",
+                                h3 { "{representation.title}" }
+                                p { "Source: {representation.source_kind}" }
+                                if let Some(domain) = &representation.domain {
+                                    p { "Domain: {domain}" }
+                                }
+                                h4 { "Stages" }
+                                ul {
+                                    for stage in &representation.stages {
+                                        li { "{stage.name}" }
+                                    }
+                                }
+                                if !representation.customer.goals.is_empty() {
+                                    h4 { "Goals" }
+                                    ul {
+                                        for goal in &representation.customer.goals {
+                                            li { "{goal}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if let RequestState::Success(result) = state.read().clone() {
                     section { class: "result-panel", role: "region", "aria-label": "Generated artifacts",
                         h2 { "Generated artifacts" }
@@ -209,7 +357,12 @@ fn App() -> Element {
                                 {
                                     let credential = credential.clone();
                                     let artifact_url = artifact.download_url.clone();
-                                    let filename = format!("{}.txt", artifact.id);
+                                    let extension = if artifact.format == "markdown" {
+                                        "md"
+                                    } else {
+                                        artifact.format.as_str()
+                                    };
+                                    let filename = format!("{}.{}", artifact.name, extension);
                                     let label = format!("Download {}", artifact.name);
                                     rsx! {
                                         li { key: "{artifact.id}",
@@ -223,7 +376,13 @@ fn App() -> Element {
                                                     spawn(async move {
                                                         match download_artifact(&credential, &artifact_url).await {
                                                             Ok(bytes) => trigger_download(&filename, &bytes),
-                                                            Err(message) => state.set(RequestState::Failed(message)),
+                                                            Err(message) => state.set(RequestState::Failed(FailureDetail {
+                                                                code: "download_failed".to_string(),
+                                                                message,
+                                                                status: None,
+                                                                details: vec!["The browser could not retrieve the generated artifact from the backend.".to_string()],
+                                                                trace: Vec::new(),
+                                                            })),
                                                         }
                                                     });
                                                 },

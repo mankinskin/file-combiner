@@ -36,6 +36,7 @@ pub enum ErrorCode {
     RequestTimeout,
     ServiceBusy,
     CombineFailed,
+    ModelUnauthenticated,
     NotFound,
 }
 
@@ -54,6 +55,7 @@ impl ErrorCode {
             ErrorCode::RequestTimeout => "request_timeout",
             ErrorCode::ServiceBusy => "service_busy",
             ErrorCode::CombineFailed => "combine_failed",
+            ErrorCode::ModelUnauthenticated => "model_unauthenticated",
             ErrorCode::NotFound => "not_found",
         }
     }
@@ -71,6 +73,7 @@ impl ErrorCode {
             ErrorCode::RequestTimeout => 408,
             ErrorCode::ServiceBusy => 429,
             ErrorCode::CombineFailed => 502,
+            ErrorCode::ModelUnauthenticated => 503,
             ErrorCode::NotFound => 404,
         }
     }
@@ -81,13 +84,60 @@ impl ErrorCode {
 pub struct ErrorBody {
     pub code: String,
     pub message: String,
+    pub status: u16,
+    pub details: Vec<String>,
 }
 
 impl ErrorBody {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self::with_details(code, message, Vec::<String>::new())
+    }
+
+    pub fn with_details<I, S>(code: ErrorCode, message: impl Into<String>, details: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let status = code.status();
+        let mut body_details = Vec::from([
+            format!("HTTP status {status}"),
+            code.description().to_owned(),
+        ]);
+        body_details.extend(details.into_iter().map(Into::into));
         ErrorBody {
             code: code.as_str().to_string(),
             message: message.into(),
+            status,
+            details: body_details,
+        }
+    }
+}
+
+impl ErrorCode {
+    fn description(self) -> &'static str {
+        match self {
+            ErrorCode::Unauthorized => {
+                "The request did not include credentials accepted by the server."
+            }
+            ErrorCode::MalformedMultipart => {
+                "The upload could not be parsed as a multipart form request."
+            }
+            ErrorCode::WrongFileCount => {
+                "The request did not contain the required number of uploaded files."
+            }
+            ErrorCode::NonFileField => "The request included a form field where a file was required.",
+            ErrorCode::InvalidFieldName => "The request used a field name outside the API contract.",
+            ErrorCode::InvalidTextEncoding => "An uploaded file was not valid UTF-8 text.",
+            ErrorCode::MetadataTooLarge => "Multipart field metadata exceeded the configured limit.",
+            ErrorCode::PayloadTooLarge => "The total request body exceeded the configured limit.",
+            ErrorCode::FileTooLarge => "One uploaded file exceeded the configured limit.",
+            ErrorCode::RequestTimeout => "The request exceeded the configured processing deadline.",
+            ErrorCode::ServiceBusy => "The service could not accept the request right now.",
+            ErrorCode::CombineFailed => "The backend failed while analyzing or combining the uploaded artifacts.",
+            ErrorCode::ModelUnauthenticated => {
+                "The backend model provider rejected the request because Copilot authentication is not configured."
+            }
+            ErrorCode::NotFound => "The requested resource does not exist or is no longer retained.",
         }
     }
 }
@@ -101,9 +151,11 @@ mod tests {
         let body = ErrorBody::new(ErrorCode::Unauthorized, "missing credentials");
         let value = serde_json::to_value(&body).unwrap();
         let obj = value.as_object().unwrap();
-        assert_eq!(obj.len(), 2);
+        assert_eq!(obj.len(), 4);
         assert_eq!(obj.get("code").unwrap(), "unauthorized");
         assert_eq!(obj.get("message").unwrap(), "missing credentials");
+        assert_eq!(obj.get("status").unwrap(), 401);
+        assert!(!obj.get("details").unwrap().as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -121,6 +173,7 @@ mod tests {
             (ErrorCode::RequestTimeout, 408),
             (ErrorCode::ServiceBusy, 429),
             (ErrorCode::CombineFailed, 502),
+            (ErrorCode::ModelUnauthenticated, 503),
             (ErrorCode::NotFound, 404),
         ];
         for (code, status) in expected {
