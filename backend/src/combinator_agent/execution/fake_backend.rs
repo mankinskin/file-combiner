@@ -1,0 +1,311 @@
+//! Deterministic test backends: `FakeCombineBackend` writes contract-declared
+//! artifacts directly through the same write-tool/validation path a real
+//! model-driven run would use, with no network or credentials.
+//! `MockCombineBackend` layers fixture-backed analysis responses on top of
+//! that same path for tests that need specific latent representations.
+use std::collections::VecDeque;
+use std::path::Path;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+
+use agent_builder::agent::{AgentExecutor, AgentRequest, AgentResponse};
+
+use crate::combinator_agent::artifact::{
+    validate_created_artifacts, CreatedArtifacts, GeneratedArtifact, WriteArtifactTool,
+};
+use crate::combinator_agent::latent::{self, AnalysisKind, LatentRepresentation};
+use crate::combinator_agent::template_contract::parse_template_contract;
+use crate::combinator_agent::{BoxFuture, CombineAgentBackend, CombineAgentError, CombineRequest};
+use crate::diagnostics::{DiagnosticsRecorder, Level};
+
+use super::prompts::parse_latent_response;
+
+/// A deterministic backend for backend integration tests: writes the
+/// combined file directly through the same write tool and validation path a
+/// real model-driven run would use, with no network or credentials.
+pub struct FakeCombineBackend;
+
+impl AgentExecutor for FakeCombineBackend {
+    fn execute<'a>(
+        &'a self,
+        _request: AgentRequest,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<AgentResponse>> + Send + 'a>> {
+        Box::pin(async {
+            Ok(AgentResponse {
+                text: "smoke-test-response".to_owned(),
+            })
+        })
+    }
+}
+
+impl CombineAgentBackend for FakeCombineBackend {
+    fn analyze<'a>(
+        &'a self,
+        kind: AnalysisKind,
+        name: &'a str,
+        contents: &'a str,
+        diagnostics: &'a DiagnosticsRecorder<'a>,
+        _direct_pat: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<LatentRepresentation, CombineAgentError>> {
+        Box::pin(async move {
+            diagnostics.record(
+                "combine.latent_analysis.attempted",
+                Level::Info,
+                "analyzing with the deterministic fake analysis backend",
+            );
+            let representation = latent::analyze_text(kind, name, contents);
+            match representation.validate() {
+                Ok(()) => {
+                    diagnostics.record(
+                        "combine.latent_analysis.succeeded",
+                        Level::Info,
+                        "produced a valid latent representation",
+                    );
+                    Ok(representation)
+                }
+                Err(error) => {
+                    diagnostics.record(
+                        "combine.latent_analysis.failed",
+                        Level::Error,
+                        format!("latent representation failed validation: {error}"),
+                    );
+                    Err(CombineAgentError::Execution(error))
+                }
+            }
+        })
+    }
+
+    fn combine<'a>(
+        &'a self,
+        dir: &'a Path,
+        request: &'a CombineRequest,
+        diagnostics: &'a DiagnosticsRecorder<'a>,
+        _direct_pat: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Vec<GeneratedArtifact>, CombineAgentError>> {
+        Box::pin(async move {
+            let contract = parse_template_contract(&request.first_contents);
+            let created = CreatedArtifacts::default();
+            let tool = WriteArtifactTool::new(
+                dir.to_path_buf(),
+                contract.artifacts.clone(),
+                created.clone(),
+            );
+            diagnostics.record(
+                "combine.agent_execution.attempted",
+                Level::Info,
+                "attempting deterministic artifact generation with the fake combine backend",
+            );
+            for artifact in &contract.artifacts {
+                let content = format!("# {}\n\n{}", artifact.name, request.second_contents);
+                if let Err(error) = tool.write(&artifact.name, &content).await {
+                    diagnostics.record(
+                        "combine.agent_execution.failed",
+                        Level::Error,
+                        format!(
+                            "fake artifact generation failed for '{}': {error}",
+                            artifact.name
+                        ),
+                    );
+                    return Err(CombineAgentError::InvalidOutput(error.to_string()));
+                }
+            }
+            diagnostics.record(
+                "combine.agent_execution.succeeded",
+                Level::Info,
+                "the fake combine backend generated every contract-declared artifact",
+            );
+            diagnostics.record(
+                "combine.artifact_validation.attempted",
+                Level::Info,
+                "validating the artifacts generated by the fake combine backend",
+            );
+            match validate_created_artifacts(dir, contract.artifacts.len(), created.get()) {
+                Ok(artifacts) => {
+                    diagnostics.record(
+                        "combine.artifact_validation.succeeded",
+                        Level::Info,
+                        format!("validated {} generated artifacts", artifacts.len()),
+                    );
+                    Ok(artifacts)
+                }
+                Err(error) => {
+                    diagnostics.record(
+                        "combine.artifact_validation.failed",
+                        Level::Error,
+                        format!("fake generated artifact validation failed: {error}"),
+                    );
+                    Err(error)
+                }
+            }
+        })
+    }
+}
+
+/// Fixture-backed application adapter. It supplies model-shaped responses but
+/// deliberately leaves session, validation, combination, and delivery to the
+/// normal application path.
+#[derive(Clone)]
+pub struct MockCombineBackend {
+    analysis_fixtures: Arc<Mutex<VecDeque<(AnalysisKind, LatentRepresentation)>>>,
+}
+
+impl MockCombineBackend {
+    pub fn from_analysis_fixtures(fixtures: Vec<LatentRepresentation>) -> Self {
+        Self {
+            analysis_fixtures: Arc::new(Mutex::new(
+                fixtures
+                    .into_iter()
+                    .map(|fixture| {
+                        let kind = match fixture.source_kind {
+                            latent::SourceKind::Template => AnalysisKind::Template,
+                            latent::SourceKind::PersonProfile => AnalysisKind::PersonProfile,
+                            latent::SourceKind::Combined => AnalysisKind::Template,
+                        };
+                        (kind, fixture)
+                    })
+                    .collect(),
+            )),
+        }
+    }
+}
+
+impl AgentExecutor for MockCombineBackend {
+    fn execute<'a>(
+        &'a self,
+        request: AgentRequest,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<AgentResponse>> + Send + 'a>> {
+        Box::pin(async move {
+            let kind = if request.prompt.contains("person profile") {
+                AnalysisKind::PersonProfile
+            } else {
+                AnalysisKind::Template
+            };
+            let mut fixtures = self
+                .analysis_fixtures
+                .lock()
+                .map_err(|_| anyhow::anyhow!("mock fixture lock poisoned"))?;
+            let index = fixtures
+                .iter()
+                .position(|(fixture_kind, _)| *fixture_kind == kind)
+                .ok_or_else(|| anyhow::anyhow!("mock fixture exhausted"))?;
+            let (_, response) = fixtures.remove(index).expect("fixture index exists");
+            Ok(AgentResponse {
+                text: serde_json::to_string(&response)?,
+            })
+        })
+    }
+}
+
+impl CombineAgentBackend for MockCombineBackend {
+    fn analyze<'a>(
+        &'a self,
+        _kind: AnalysisKind,
+        _name: &'a str,
+        _contents: &'a str,
+        diagnostics: &'a DiagnosticsRecorder<'a>,
+        _direct_pat: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<LatentRepresentation, CombineAgentError>> {
+        Box::pin(async move {
+            diagnostics.record(
+                "combine.latent_analysis.attempted",
+                Level::Info,
+                "analyzing with a fixture-backed mock model response",
+            );
+            let response = self
+                .execute(AgentRequest::new(
+                    match _kind {
+                        AnalysisKind::Template => "fixture template analysis",
+                        AnalysisKind::PersonProfile => "fixture person profile analysis",
+                    },
+                    6,
+                ))
+                .await
+                .map_err(|error| CombineAgentError::Execution(error.to_string()))?;
+            match parse_latent_response(&response.text) {
+                Ok(representation) => {
+                    diagnostics.record(
+                        "combine.latent_analysis.succeeded",
+                        Level::Info,
+                        "produced a valid latent representation from the fixture response",
+                    );
+                    Ok(representation)
+                }
+                Err(error) => {
+                    diagnostics.record(
+                        "combine.latent_analysis.failed",
+                        Level::Error,
+                        format!("fixture response could not be parsed: {error}"),
+                    );
+                    Err(error)
+                }
+            }
+        })
+    }
+
+    fn combine<'a>(
+        &'a self,
+        dir: &'a Path,
+        request: &'a CombineRequest,
+        diagnostics: &'a DiagnosticsRecorder<'a>,
+        _direct_pat: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Vec<GeneratedArtifact>, CombineAgentError>> {
+        // Mock combine retains the normal server-owned artifact validation path.
+        FakeCombineBackend.combine(dir, request, diagnostics, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FakeCombineBackend;
+    use crate::combinator_agent::{CombineAgentBackend, CombineRequest};
+    use crate::diagnostics::DiagnosticsRecorder;
+    use std::fs;
+
+    const TEMPLATE: &str = "---\nversion: 1\nconversation:\n  context: initial discovery\n  type: advisory\n  subject: retirement planning\nrole: financial adviser\npersonalization:\n  - goals\nartifacts:\n  - name: preparation-brief\n    format: markdown\n    sections:\n      - Priorities\n---\n# Brief";
+
+    #[tokio::test]
+    async fn fake_backend_produces_every_declared_artifact() {
+        let dir = std::env::temp_dir().join(format!(
+            "combinator-agent-execution-test-{}-{:?}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            std::thread::current().id(),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let backend = FakeCombineBackend;
+        let request = CombineRequest {
+            first_name: "a.txt".to_owned(),
+            first_contents: TEMPLATE.replace(
+                "  - name: preparation-brief\n    format: markdown\n    sections:\n      - Priorities",
+                "  - name: preparation-brief\n    format: markdown\n    sections:\n      - Priorities\n  - name: question-list\n    format: markdown\n    sections:\n      - Questions",
+            ),
+            second_name: "b.txt".to_owned(),
+            second_contents: "world".to_owned(),
+        };
+
+        let artifacts = backend
+            .combine(
+                &dir,
+                &request,
+                &DiagnosticsRecorder::new("test-request"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(artifacts.len(), 2);
+        assert_eq!(artifacts[0].id, "artifact-0");
+        assert_eq!(artifacts[1].id, "artifact-1");
+        assert_eq!(
+            fs::read_to_string(&artifacts[0].path).unwrap(),
+            "# preparation-brief\n\nworld"
+        );
+        assert_eq!(
+            fs::read_to_string(&artifacts[1].path).unwrap(),
+            "# question-list\n\nworld"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+}

@@ -280,6 +280,94 @@ textarea:focus-visible,
   color: var(--gray-900);
 }
 
+.processing-panel li.failed {
+  background: var(--danger, #b3261e);
+  color: white;
+  font-weight: 600;
+}
+
+.artifact-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.artifact-block {
+  background: white;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+}
+
+.artifact-block-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.artifact-block-header h3 {
+  margin: 0;
+}
+
+.artifact-format {
+  color: var(--gray-600);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.artifact-content {
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin: var(--space-3) 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.artifact-loading {
+  color: var(--gray-600);
+  font-style: italic;
+}
+
+.artifact-error {
+  color: var(--danger, #b3261e);
+  font-weight: 600;
+}
+
+.artifact-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.copy-notice {
+  margin: 0 0 var(--space-3);
+  color: var(--gray-900);
+  font-size: 0.85rem;
+}
+
+.representation-stages .stage-name {
+  font-weight: 600;
+}
+
+.representation-stages .stage-purpose {
+  margin: 0.2rem 0;
+  color: var(--gray-600);
+}
+
+.representation-stages .stage-aspects {
+  margin: 0.2rem 0;
+  color: var(--gray-600);
+  font-size: 0.85rem;
+}
+
 .diagnostics-sidebar {
   background: var(--gray-50);
   border: 1px solid var(--gray-200);

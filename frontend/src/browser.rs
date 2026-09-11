@@ -46,6 +46,18 @@ pub(crate) fn clear_file_input(id: &str) {
     }
 }
 
+/// Copies artifact text to the clipboard so a user can take a completed
+/// block without downloading it. Returns false when the browser withholds
+/// the clipboard (insecure origin or denied permission) so the caller can
+/// surface an actionable state instead of silently doing nothing.
+pub(crate) async fn copy_to_clipboard(text: &str) -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let clipboard = window.navigator().clipboard();
+    JsFuture::from(clipboard.write_text(text)).await.is_ok()
+}
+
 pub(crate) fn trigger_download(filename: &str, bytes: &[u8]) {
     let array = Uint8Array::from(bytes);
     let parts = Array::new();

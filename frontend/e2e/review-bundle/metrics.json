@@ -1,0 +1,10 @@
+{
+  "recorded_at": "2026-09-11T00:13:34.648Z",
+  "total_latency_ms": 89753,
+  "stages": {
+    "analysis_started_ms": 33,
+    "analysis_completed_ms": 22473,
+    "combination_completed_ms": 22475,
+    "generation_completed_ms": 89395
+  }
+}

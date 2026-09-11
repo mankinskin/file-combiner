@@ -60,25 +60,28 @@ impl Credential {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
     AccessValidation,
-    Analyzing,
+    AnalyzingTemplate,
+    AnalyzingProfile,
     Combining,
-    PreparingDownload,
+    Generating,
 }
 
 impl Stage {
-    pub(crate) const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::AccessValidation,
-        Self::Analyzing,
+        Self::AnalyzingTemplate,
+        Self::AnalyzingProfile,
         Self::Combining,
-        Self::PreparingDownload,
+        Self::Generating,
     ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::AccessValidation => "Access validation",
-            Self::Analyzing => "Analyzing uploaded artifacts",
-            Self::Combining => "Combining",
-            Self::PreparingDownload => "Preparing download",
+            Self::AnalyzingTemplate => "Analyzing conversation template",
+            Self::AnalyzingProfile => "Analyzing person information",
+            Self::Combining => "Combining representations",
+            Self::Generating => "Generating artifacts",
         }
     }
 
@@ -101,6 +104,33 @@ pub(crate) struct GeneratedArtifact {
 #[derive(Clone, PartialEq, serde::Deserialize)]
 pub(crate) struct ArtifactList {
     pub(crate) artifacts: Vec<GeneratedArtifact>,
+}
+
+/// One generated artifact together with the text the workbench renders in
+/// place. `content` stays `None` while the fetch is in flight and becomes
+/// `Err` when it fails, so a failed block never hides the artifacts beside it.
+#[derive(Clone, PartialEq)]
+pub(crate) struct WorkbenchArtifact {
+    pub(crate) artifact: GeneratedArtifact,
+    pub(crate) content: Option<Result<String, String>>,
+}
+
+impl WorkbenchArtifact {
+    pub(crate) fn pending(artifact: GeneratedArtifact) -> Self {
+        Self {
+            artifact,
+            content: None,
+        }
+    }
+
+    pub(crate) fn file_name(&self) -> String {
+        let extension = if self.artifact.format == "markdown" {
+            "md"
+        } else {
+            self.artifact.format.as_str()
+        };
+        format!("{}.{}", self.artifact.name, extension)
+    }
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize)]

@@ -1,7 +1,9 @@
 //! The authenticated `/api/combine` endpoint: bounded, in-memory multipart handling.
+mod analyze;
 mod artifact_store;
 mod auth;
 mod handler;
+mod multipart;
 mod pipeline;
 mod session_store;
 
@@ -16,8 +18,9 @@ use crate::config::GroupConfig;
 use crate::contract::MAX_CONCURRENT_COMBINES;
 use crate::diagnostics::DiagnosticsStore;
 
+use analyze::analyze;
 use artifact_store::ArtifactStore;
-use handler::{analyze, download_session_artifact};
+use handler::download_session_artifact;
 use handler::{combine, diagnostics, download_artifact};
 use session_store::AnalysisSessionStore;
 

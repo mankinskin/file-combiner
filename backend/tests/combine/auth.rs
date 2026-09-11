@@ -24,8 +24,20 @@ async fn invalid_credentials_returns_401() {
         .oneshot(request(Some("wrong-token"), false, body))
         .await
         .unwrap();
-    // Non-matching Bearer tokens are treated as direct PATs and authorized.
-    // With FakeCombineBackend, this results in a successful 200 response.
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn recognized_direct_pat_shape_is_forwarded_for_request_scoped_auth() {
+    let app = router(test_state(), "frontend/dist");
+    let body = build_multipart_body(&[
+        file_part("first", "first.txt", VALID_TEMPLATE),
+        file_part("second", "second.txt", "two"),
+    ]);
+    let response = app
+        .oneshot(request(Some("ghp_test-token"), false, body))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
 

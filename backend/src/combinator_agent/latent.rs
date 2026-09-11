@@ -138,9 +138,8 @@ impl LatentRepresentation {
     }
 }
 
-pub fn analyze_text(kind: AnalysisKind, name: &str, contents: &str) -> LatentRepresentation {
-    let lower = contents.to_lowercase();
-    let domain = if lower.contains("closing")
+fn detect_domain(lower: &str) -> Option<String> {
+    if lower.contains("closing")
         || lower.contains("sales")
         || lower.contains("angebot")
         || lower.contains("pitch")
@@ -152,21 +151,39 @@ pub fn analyze_text(kind: AnalysisKind, name: &str, contents: &str) -> LatentRep
         Some("recruiting".to_owned())
     } else {
         None
-    };
-    let lines = contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty());
-    let mut stages = Vec::new();
-    let mut questions = Vec::new();
-    let mut information = Vec::new();
-    let mut motivations = Vec::new();
-    let mut source_spans = Vec::new();
+    }
+}
 
-    for line in lines {
+fn source_kind_for(kind: AnalysisKind) -> SourceKind {
+    match kind {
+        AnalysisKind::Template => SourceKind::Template,
+        AnalysisKind::PersonProfile => SourceKind::PersonProfile,
+    }
+}
+
+fn default_stage_name(kind: AnalysisKind) -> &'static str {
+    match kind {
+        AnalysisKind::Template => "Conversation structure",
+        AnalysisKind::PersonProfile => "Person context",
+    }
+}
+
+/// Accumulates the per-line classification results used to build a
+/// [`LatentRepresentation`] from raw text.
+#[derive(Default)]
+struct LineAccumulators {
+    stages: Vec<ConversationStage>,
+    questions: Vec<String>,
+    information: Vec<String>,
+    motivations: Vec<String>,
+    source_spans: Vec<SourceSpan>,
+}
+
+impl LineAccumulators {
+    fn record_line(&mut self, kind: AnalysisKind, name: &str, line: &str) {
         let normalized = line.trim_start_matches('#').trim();
         if line.starts_with('#') {
-            stages.push(ConversationStage {
+            self.stages.push(ConversationStage {
                 name: normalized.to_owned(),
                 purpose: None,
                 questions: Vec::new(),
@@ -174,59 +191,69 @@ pub fn analyze_text(kind: AnalysisKind, name: &str, contents: &str) -> LatentRep
                 target_aspects: vec![TargetAspect::Customer, TargetAspect::Situation],
             });
         } else if line.contains('?') {
-            questions.push(normalized.to_owned());
+            self.questions.push(normalized.to_owned());
         } else if line.starts_with('-') || line.starts_with('*') {
-            information.push(normalized.trim_start_matches(['-', '*']).trim().to_owned());
+            self.information
+                .push(normalized.trim_start_matches(['-', '*']).trim().to_owned());
         }
-        if matches!(kind, AnalysisKind::PersonProfile)
-            && (normalized.to_lowercase().contains("ziel")
-                || normalized.to_lowercase().contains("wunsch")
-                || normalized.to_lowercase().contains("goal"))
-        {
-            motivations.push(normalized.to_owned());
+
+        if matches!(kind, AnalysisKind::PersonProfile) && mentions_goal(normalized) {
+            self.motivations.push(normalized.to_owned());
         }
-        if source_spans.len() < 32 && normalized.len() <= 240 {
-            source_spans.push(SourceSpan {
+        if self.source_spans.len() < 32 && normalized.len() <= 240 {
+            self.source_spans.push(SourceSpan {
                 label: name.to_owned(),
                 excerpt: normalized.to_owned(),
             });
         }
     }
+}
 
-    if stages.is_empty() {
-        stages.push(ConversationStage {
-            name: match kind {
-                AnalysisKind::Template => "Conversation structure".to_owned(),
-                AnalysisKind::PersonProfile => "Person context".to_owned(),
-            },
+fn mentions_goal(normalized: &str) -> bool {
+    let lower = normalized.to_lowercase();
+    lower.contains("ziel") || lower.contains("wunsch") || lower.contains("goal")
+}
+
+pub fn analyze_text(kind: AnalysisKind, name: &str, contents: &str) -> LatentRepresentation {
+    let domain = detect_domain(&contents.to_lowercase());
+
+    let mut acc = LineAccumulators::default();
+    for line in contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        acc.record_line(kind, name, line);
+    }
+
+    if acc.stages.is_empty() {
+        acc.stages.push(ConversationStage {
+            name: default_stage_name(kind).to_owned(),
             purpose: Some("Structure inferred from uploaded content".to_owned()),
-            questions: questions.clone(),
-            information: information.clone(),
+            questions: acc.questions.clone(),
+            information: acc.information.clone(),
             target_aspects: vec![TargetAspect::Situation],
         });
     }
-    stages[0].questions = questions.clone();
-    stages[0].information = information.clone();
+    acc.stages[0].questions = acc.questions.clone();
+    acc.stages[0].information = acc.information.clone();
 
     LatentRepresentation {
         schema_version: LATENT_SCHEMA_VERSION,
-        source_kind: match kind {
-            AnalysisKind::Template => SourceKind::Template,
-            AnalysisKind::PersonProfile => SourceKind::PersonProfile,
-        },
+        source_kind: source_kind_for(kind),
         title: name.to_owned(),
         domain,
-        stages,
+        stages: acc.stages,
         customer: CustomerContext {
-            situation: information,
-            goals: motivations.clone(),
+            situation: acc.information,
+            goals: acc.motivations.clone(),
             ..CustomerContext::default()
         },
-        motivations,
-        questions,
+        motivations: acc.motivations,
+        questions: acc.questions,
         objections: Vec::new(),
         tone: vec!["clear".to_owned(), "respectful".to_owned()],
-        source_spans,
+        source_spans: acc.source_spans,
     }
 }
 

@@ -25,8 +25,8 @@ pub(super) enum AuthorizationResult {
 /// Supports three schemes:
 /// - `Bearer <token>`: `COMBINE_BEARER_TOKEN` always authorizes; `COMBINE_PROBE_TOKEN` only
 ///   authorizes when the internal probe header is also present.
-/// - `Bearer <direct-pat>`: Any Bearer token that doesn't match the known tokens is treated
-///   as a direct Copilot PAT and authorized for request-scoped use.
+/// - `Bearer <direct-pat>`: A bearer value with a recognized GitHub token
+///   prefix is authorized for request-scoped direct-PAT use.
 /// - `Group <base64(group_name:group_password)>`: validates against configured group credentials.
 ///
 /// Returns an AuthorizationResult indicating the outcome.
@@ -36,85 +36,78 @@ pub(super) fn authorize(state: &AppState, headers: &HeaderMap) -> AuthorizationR
         .and_then(|value| value.to_str().ok());
 
     let Some(auth_header) = auth_header else {
-        return AuthorizationResult::Unauthorized(error_response(
-            ErrorCode::Unauthorized,
-            "missing credentials",
-        ));
+        return unauthorized("missing credentials");
     };
 
-    // Check for Bearer scheme
     if let Some(token) = auth_header.strip_prefix("Bearer ") {
-        if token == state.bearer_token.as_ref() {
-            return AuthorizationResult::Authorized;
-        }
+        return authorize_bearer(state, headers, token);
+    }
 
-        if token == state.probe_token.as_ref() {
-            if headers.contains_key(PROBE_HEADER) {
-                return AuthorizationResult::Authorized;
-            } else {
-                // Probe token without the required probe header is rejected
-                return AuthorizationResult::Unauthorized(error_response(
-                    ErrorCode::Unauthorized,
-                    "probe token requires probe header",
-                ));
-            }
-        }
-
-        // If Bearer token doesn't match known tokens, treat it as a direct PAT
-        // and authorize it for request-scoped use
-        if !token.is_empty() {
-            return AuthorizationResult::AuthorizedWithDirectPat(token.to_owned());
+    if let Some(credentials_b64) = auth_header.strip_prefix("Group ") {
+        if let Some(result) = authorize_group(state, credentials_b64) {
+            return result;
         }
     }
-    // Check for Group scheme
-    else if let Some(credentials_b64) = auth_header.strip_prefix("Group ") {
-        // Decode base64 credentials
-        let credentials_bytes =
-            match base64::engine::general_purpose::STANDARD.decode(credentials_b64) {
-                Ok(bytes) => bytes,
-                Err(_) => {
-                    return AuthorizationResult::Unauthorized(error_response(
-                        ErrorCode::Unauthorized,
-                        "invalid credentials",
-                    ));
-                }
-            };
 
-        let credentials_str = match String::from_utf8(credentials_bytes) {
-            Ok(s) => s,
-            Err(_) => {
-                return AuthorizationResult::Unauthorized(error_response(
-                    ErrorCode::Unauthorized,
-                    "invalid credentials",
-                ));
-            }
+    unauthorized("invalid credentials")
+}
+
+fn unauthorized(message: &str) -> AuthorizationResult {
+    AuthorizationResult::Unauthorized(error_response(ErrorCode::Unauthorized, message))
+}
+
+/// Handles the `Bearer <token>` scheme: shared bearer token, probe token
+/// (requires the probe header), or a plausible direct GitHub PAT.
+fn authorize_bearer(state: &AppState, headers: &HeaderMap, token: &str) -> AuthorizationResult {
+    if token == state.bearer_token.as_ref() {
+        return AuthorizationResult::Authorized;
+    }
+
+    if token == state.probe_token.as_ref() {
+        return if headers.contains_key(PROBE_HEADER) {
+            AuthorizationResult::Authorized
+        } else {
+            unauthorized("probe token requires probe header")
         };
-
-        // Parse group_name:group_password
-        if let Some(colon_pos) = credentials_str.find(':') {
-            let (provided_group_name, provided_group_password) =
-                credentials_str.split_at(colon_pos);
-            let provided_group_password = &provided_group_password[1..];
-
-            if let Some(group_config) = &state.group {
-                // Use constant-time comparison to avoid timing attacks
-                if constant_time_eq(
-                    provided_group_name.as_bytes(),
-                    group_config.group_name.as_bytes(),
-                ) && constant_time_eq(
-                    provided_group_password.as_bytes(),
-                    group_config.group_password.as_bytes(),
-                ) {
-                    return AuthorizationResult::Authorized;
-                }
-            }
-        }
     }
 
-    AuthorizationResult::Unauthorized(error_response(
-        ErrorCode::Unauthorized,
-        "invalid credentials",
-    ))
+    if is_plausible_direct_pat(token) {
+        return AuthorizationResult::AuthorizedWithDirectPat(token.to_owned());
+    }
+
+    unauthorized(
+        "invalid credentials: enter the configured shared access key or a valid Copilot personal access token",
+    )
+}
+
+/// Handles the `Group <base64(name:password)>` scheme. Returns `None` for
+/// any decode/parse/config failure so the caller falls back to the shared
+/// "invalid credentials" response, matching the prior unified behavior.
+fn authorize_group(state: &AppState, credentials_b64: &str) -> Option<AuthorizationResult> {
+    let credentials_bytes = base64::engine::general_purpose::STANDARD
+        .decode(credentials_b64)
+        .ok()?;
+    let credentials_str = String::from_utf8(credentials_bytes).ok()?;
+    let colon_pos = credentials_str.find(':')?;
+    let (provided_group_name, provided_group_password) = credentials_str.split_at(colon_pos);
+    let provided_group_password = &provided_group_password[1..];
+
+    let group_config = state.group.as_ref()?;
+    let matches = constant_time_eq(
+        provided_group_name.as_bytes(),
+        group_config.group_name.as_bytes(),
+    ) && constant_time_eq(
+        provided_group_password.as_bytes(),
+        group_config.group_password.as_bytes(),
+    );
+
+    matches.then_some(AuthorizationResult::Authorized)
+}
+
+fn is_plausible_direct_pat(token: &str) -> bool {
+    ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"]
+        .iter()
+        .any(|prefix| token.starts_with(prefix) && token.len() > prefix.len())
 }
 
 /// Constant-time comparison to prevent timing attacks.

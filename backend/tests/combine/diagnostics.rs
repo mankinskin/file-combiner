@@ -83,7 +83,7 @@ async fn combine_issues_diagnostics_capability_with_structured_redacted_records(
     // response; otherwise Direct PAT failures lose their backend trace.
     let response = app
         .clone()
-        .oneshot(diagnostics_request(Some("wrong-token"), &capability))
+        .oneshot(diagnostics_request(Some("ghp_test-token"), &capability))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

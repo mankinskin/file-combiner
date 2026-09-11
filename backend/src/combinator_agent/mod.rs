@@ -9,12 +9,20 @@ use std::pin::Pin;
 use crate::diagnostics::DiagnosticsRecorder;
 
 mod artifact;
+pub mod contracts;
 mod execution;
+mod generation;
 pub mod instructions;
 pub mod latent;
+mod response;
 mod template_contract;
 
 pub use artifact::GeneratedArtifact;
+pub use contracts::{
+    combine_representations, CombinationError, CombinedRepresentation, GeneratedArtifactContent,
+    GeneratedArtifactKind, GeneratedArtifactSection, GeneratedArtifactSet, MissingInput,
+    SourceFact,
+};
 pub use execution::{FakeCombineBackend, MockCombineBackend, RigCombineBackend};
 pub use latent::{AnalysisKind, LatentRepresentation};
 
@@ -120,4 +128,18 @@ pub trait CombineAgentBackend: Send + Sync {
         diagnostics: &'a DiagnosticsRecorder<'a>,
         direct_pat: Option<&'a str>,
     ) -> BoxFuture<'a, Result<Vec<GeneratedArtifact>, CombineAgentError>>;
+
+    fn combine_latent<'a>(
+        &'a self,
+        template: &'a LatentRepresentation,
+        profile: &'a LatentRepresentation,
+        _diagnostics: &'a DiagnosticsRecorder<'a>,
+        _direct_pat: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<GeneratedArtifactSet, CombineAgentError>> {
+        Box::pin(async move {
+            let combined = combine_representations(Some(template), Some(profile))
+                .map_err(|error| CombineAgentError::Execution(error.to_string()))?;
+            GeneratedArtifactSet::from_combined(&combined).map_err(CombineAgentError::Execution)
+        })
+    }
 }

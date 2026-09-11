@@ -1,68 +1,11 @@
 import { test, expect } from '@playwright/test';
-import fs from 'node:fs';
-import path from 'node:path';
-
-const token = process.env.COMBINE_TOKEN ?? '';
-const templateText = `# Closing conversation
-
-## Opening
-Are you ready to begin?
-
-## Offer
-Explain the next steps clearly.`;
-const profileText = `# Customer profile
-
-## Goal
-Build a repeatable business.
-
-## Situation
-Already operates a small hospitality business.`;
-
-const pitchScriptTemplateText = fs
-  .readFileSync(path.join(__dirname, 'fixtures', 'pitch-script-template.md'), 'utf-8')
-  .replace(/\r\n/g, '\n');
-const pitchScriptProfileText = fs
-  .readFileSync(path.join(__dirname, 'fixtures', 'pitch-script-profile.md'), 'utf-8')
-  .replace(/\r\n/g, '\n');
-
-// A template with more headings than the schema allows deterministically
-// fails real backend validation, without mocking any network call.
-const tooManyStagesTemplate = Array.from(
-  { length: 40 },
-  (_, index) => `# Stage ${index + 1}`,
-).join('\n');
-
-test('a failed analysis shows a full attempted/failed trace, not just a generic message', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await page.getByLabel('Access key').fill(token);
-  await page.getByLabel('Conversation template').fill(tooManyStagesTemplate);
-  await page.getByLabel('Person information').fill(profileText);
-  await page.getByRole('button', { name: 'Generate guide' }).click();
-
-  const alert = page.getByRole('alert');
-  await expect(alert).toBeVisible();
-  await expect(alert).toContainText('analyzing');
-  await expect(alert).toContainText('too many stages');
-
-  const alertText = ((await alert.textContent()) ?? '').trim();
-  expect(alertText).not.toBe('artifact analysis failed');
-});
-
-test('a failed analysis also populates the diagnostics sidebar with the same trace', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await page.getByLabel('Access key').fill(token);
-  await page.getByLabel('Conversation template').fill(tooManyStagesTemplate);
-  await page.getByLabel('Person information').fill(profileText);
-  await page.getByRole('button', { name: 'Generate guide' }).click();
-
-  const diagnosticsRegion = page.getByRole('region', { name: 'Diagnostics' });
-  await expect(diagnosticsRegion).toContainText('analyzing');
-  await expect(diagnosticsRegion).toContainText('too many stages');
-});
+import {
+  token,
+  templateText,
+  profileText,
+  pitchScriptTemplateText,
+  pitchScriptProfileText,
+} from './combine-shared';
 
 test('a successful request populates the diagnostics sidebar', async ({ page }) => {
   await page.goto('/');
@@ -151,49 +94,60 @@ test('a user can see intermediate analysis before final artifacts', async ({ pag
   await expect(page.getByRole('region', { name: 'Generated artifacts' })).toBeVisible();
 });
 
-test('an incomplete form keeps Generate guide unavailable', async ({ page }) => {
+test('the workbench renders each artifact in place instead of only offering a download', async ({
+  page,
+}) => {
   await page.goto('/');
-  const generate = page.getByRole('button', { name: 'Generate guide' });
-  await expect(generate).toBeDisabled();
   await page.getByLabel('Access key').fill(token);
-  await page.getByLabel('Conversation template').fill(templateText);
-  await expect(generate).toBeDisabled();
-  await page.getByLabel('Person information').fill(profileText);
-  await expect(generate).toBeEnabled();
-});
-
-test('invalid group credentials show an accessible authentication error', async ({ page }) => {
-  await page.goto('/');
-  await page.getByLabel('Access method').selectOption('group');
-  await page.getByLabel('Group name').fill('invalid-group');
-  await page.getByLabel('Group password').fill('invalid-password');
   await page.getByLabel('Conversation template').fill(templateText);
   await page.getByLabel('Person information').fill(profileText);
   await page.getByRole('button', { name: 'Generate guide' }).click();
 
-  await expect(page.getByRole('alert')).toContainText('invalid credentials');
-  await expect(page.getByRole('alert').locator('ol')).toHaveCount(0);
-  await expect(page.getByLabel('Conversation template')).toHaveValue(templateText);
-  await expect(page.getByLabel('Person information')).toHaveValue(profileText);
+  const overview = page.getByLabel('closer-overview content');
+  const guide = page.getByLabel('individualized-conversation-guide content');
+  await expect(overview).toBeVisible();
+  await expect(guide).toBeVisible();
+
+  // The rendered block must carry the artifact's real text, not a placeholder.
+  await expect(overview).toContainText('Closer overview for');
+  await expect(guide).toContainText('Individualized conversation guide for');
+
+  await expect(page.getByRole('button', { name: 'Copy closer-overview' })).toBeEnabled();
+  await expect(
+    page.getByRole('button', { name: 'Copy individualized-conversation-guide' }),
+  ).toBeEnabled();
 });
 
-test('pasted line endings and control characters are normalized in the editor', async ({ page }) => {
-  await page.goto('/');
-  await page.getByLabel('Conversation template').fill('first line\r\nsecond line\r\u0007third line');
-  await expect(page.getByLabel('Conversation template')).toHaveValue(
-    'first line\nsecond line\nthird line',
-  );
-});
-
-test('Reset clears the visible form and returns focus to Access key', async ({ page }) => {
+test('the workbench reports every pipeline stage as progress, ending completed', async ({
+  page,
+}) => {
   await page.goto('/');
   await page.getByLabel('Access key').fill(token);
-  await page.getByLabel('Conversation template').fill('draft content');
-  await page.getByRole('button', { name: 'Reset' }).click();
+  await page.getByLabel('Conversation template').fill(templateText);
+  await page.getByLabel('Person information').fill(profileText);
+  await page.getByRole('button', { name: 'Generate guide' }).click();
 
-  await expect(page.getByLabel('Access key')).toHaveValue('');
-  await expect(page.getByLabel('Access key')).toBeFocused();
-  await expect(page.getByLabel('Conversation template')).toHaveValue('');
-  await expect(page.getByLabel('Person information')).toHaveValue('');
+  const progress = page.getByRole('status').filter({ hasText: 'Progress' });
+  await expect(progress).toBeVisible();
+  await expect(progress).toContainText('Analyzing conversation template');
+  await expect(progress).toContainText('Analyzing person information');
+  await expect(progress).toContainText('Combining representations');
+  await expect(progress).toContainText('Generating artifacts');
+
+  await expect(page.getByLabel('closer-overview content')).toBeVisible();
+  await expect(progress.getByText('Generating artifacts — completed')).toBeVisible();
 });
 
+test('the workbench never exposes the session id or the access key', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Access key').fill(token);
+  await page.getByLabel('Conversation template').fill(templateText);
+  await page.getByLabel('Person information').fill(profileText);
+  await page.getByRole('button', { name: 'Generate guide' }).click();
+
+  await expect(page.getByLabel('closer-overview content')).toBeVisible();
+
+  const workbench = await page.locator('main').innerText();
+  expect(workbench).not.toContain('session-');
+  expect(workbench).not.toContain(token);
+});

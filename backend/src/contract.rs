@@ -40,24 +40,95 @@ pub enum ErrorCode {
     NotFound,
 }
 
+/// Table-driven `(code, wire string, description)` rows, one per [`ErrorCode`]
+/// variant. [`ErrorCode::as_str`] and [`ErrorCode::description`] look up this
+/// table instead of repeating a per-variant match, keeping both below the
+/// complexity threshold.
+const ERROR_CODE_TABLE: &[(ErrorCode, &str, &str)] = &[
+    (
+        ErrorCode::Unauthorized,
+        "unauthorized",
+        "The request did not include credentials accepted by the server.",
+    ),
+    (
+        ErrorCode::MalformedMultipart,
+        "malformed_multipart",
+        "The upload could not be parsed as a multipart form request.",
+    ),
+    (
+        ErrorCode::WrongFileCount,
+        "wrong_file_count",
+        "The request did not contain the required number of uploaded files.",
+    ),
+    (
+        ErrorCode::NonFileField,
+        "non_file_field",
+        "The request included a form field where a file was required.",
+    ),
+    (
+        ErrorCode::InvalidFieldName,
+        "invalid_field_name",
+        "The request used a field name outside the API contract.",
+    ),
+    (
+        ErrorCode::InvalidTextEncoding,
+        "invalid_text_encoding",
+        "An uploaded file was not valid UTF-8 text.",
+    ),
+    (
+        ErrorCode::MetadataTooLarge,
+        "metadata_too_large",
+        "Multipart field metadata exceeded the configured limit.",
+    ),
+    (
+        ErrorCode::PayloadTooLarge,
+        "payload_too_large",
+        "The total request body exceeded the configured limit.",
+    ),
+    (
+        ErrorCode::FileTooLarge,
+        "file_too_large",
+        "One uploaded file exceeded the configured limit.",
+    ),
+    (
+        ErrorCode::RequestTimeout,
+        "request_timeout",
+        "The request exceeded the configured processing deadline.",
+    ),
+    (
+        ErrorCode::ServiceBusy,
+        "service_busy",
+        "The service could not accept the request right now.",
+    ),
+    (
+        ErrorCode::CombineFailed,
+        "combine_failed",
+        "The backend failed while analyzing or combining the uploaded artifacts.",
+    ),
+    (
+        ErrorCode::ModelUnauthenticated,
+        "model_unauthenticated",
+        "The backend model provider rejected the request because Copilot authentication is not configured.",
+    ),
+    (
+        ErrorCode::NotFound,
+        "not_found",
+        "The requested resource does not exist or is no longer retained.",
+    ),
+];
+
 impl ErrorCode {
+    /// Look up this variant's table row. Panics only if a variant is ever
+    /// added to [`ErrorCode`] without a matching [`ERROR_CODE_TABLE`] row.
+    fn table_row(self) -> &'static (ErrorCode, &'static str, &'static str) {
+        ERROR_CODE_TABLE
+            .iter()
+            .find(|(code, _, _)| *code == self)
+            .expect("every ErrorCode variant must have an ERROR_CODE_TABLE row")
+    }
+
     pub fn as_str(self) -> &'static str {
-        match self {
-            ErrorCode::Unauthorized => "unauthorized",
-            ErrorCode::MalformedMultipart => "malformed_multipart",
-            ErrorCode::WrongFileCount => "wrong_file_count",
-            ErrorCode::NonFileField => "non_file_field",
-            ErrorCode::InvalidFieldName => "invalid_field_name",
-            ErrorCode::InvalidTextEncoding => "invalid_text_encoding",
-            ErrorCode::MetadataTooLarge => "metadata_too_large",
-            ErrorCode::PayloadTooLarge => "payload_too_large",
-            ErrorCode::FileTooLarge => "file_too_large",
-            ErrorCode::RequestTimeout => "request_timeout",
-            ErrorCode::ServiceBusy => "service_busy",
-            ErrorCode::CombineFailed => "combine_failed",
-            ErrorCode::ModelUnauthenticated => "model_unauthenticated",
-            ErrorCode::NotFound => "not_found",
-        }
+        self.table_row().1
     }
 
     pub fn status(self) -> u16 {
@@ -115,30 +186,7 @@ impl ErrorBody {
 
 impl ErrorCode {
     fn description(self) -> &'static str {
-        match self {
-            ErrorCode::Unauthorized => {
-                "The request did not include credentials accepted by the server."
-            }
-            ErrorCode::MalformedMultipart => {
-                "The upload could not be parsed as a multipart form request."
-            }
-            ErrorCode::WrongFileCount => {
-                "The request did not contain the required number of uploaded files."
-            }
-            ErrorCode::NonFileField => "The request included a form field where a file was required.",
-            ErrorCode::InvalidFieldName => "The request used a field name outside the API contract.",
-            ErrorCode::InvalidTextEncoding => "An uploaded file was not valid UTF-8 text.",
-            ErrorCode::MetadataTooLarge => "Multipart field metadata exceeded the configured limit.",
-            ErrorCode::PayloadTooLarge => "The total request body exceeded the configured limit.",
-            ErrorCode::FileTooLarge => "One uploaded file exceeded the configured limit.",
-            ErrorCode::RequestTimeout => "The request exceeded the configured processing deadline.",
-            ErrorCode::ServiceBusy => "The service could not accept the request right now.",
-            ErrorCode::CombineFailed => "The backend failed while analyzing or combining the uploaded artifacts.",
-            ErrorCode::ModelUnauthenticated => {
-                "The backend model provider rejected the request because Copilot authentication is not configured."
-            }
-            ErrorCode::NotFound => "The requested resource does not exist or is no longer retained.",
-        }
+        self.table_row().2
     }
 }
 

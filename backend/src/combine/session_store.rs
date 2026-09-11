@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::combinator_agent::LatentRepresentation;
+use crate::combinator_agent::{GeneratedArtifactSet, LatentRepresentation};
 
 const SESSION_TTL: Duration = Duration::from_secs(900);
 const MAX_SESSIONS: usize = 64;
@@ -85,40 +85,62 @@ impl AnalysisSessionStore {
             }
         }
 
-        if session.template.is_some() && session.profile.is_some() && session.artifacts.is_empty() {
-            let combined = crate::combinator_agent::latent::combine_representations(
-                session.template.as_ref().expect("checked above"),
-                session.profile.as_ref().expect("checked above"),
-            );
-            session.artifacts = generate_minimum_artifacts(&combined);
-        }
-
-        let mut representations = Vec::new();
-        if let Some(template) = &session.template {
-            representations.push(template.clone());
-        }
-        if let Some(profile) = &session.profile {
-            representations.push(profile.clone());
-        }
-        let complete = session.template.is_some() && session.profile.is_some();
-        let artifacts = session
-            .artifacts
-            .iter()
-            .map(|artifact| SessionArtifactResponse {
-                id: artifact.id.clone(),
-                name: artifact.name.clone(),
-                format: artifact.format.clone(),
-                download_url: format!("/api/sessions/{session_id}/artifacts/{}", artifact.id),
-            })
-            .collect();
-        Ok(AnalysisResponse {
-            session_id,
-            complete,
-            representations,
-            artifacts,
-        })
+        Ok(response_for_session(&session_id, session))
     }
 
+    pub(super) fn inputs(
+        &self,
+        session_id: &str,
+    ) -> Option<(LatentRepresentation, LatentRepresentation)> {
+        let sessions = self.0.lock().ok()?;
+        let session = sessions.get(session_id)?;
+        Some((session.template.clone()?, session.profile.clone()?))
+    }
+
+    pub(super) fn store_generated(
+        &self,
+        session_id: &str,
+        generated: GeneratedArtifactSet,
+    ) -> Result<AnalysisResponse, &'static str> {
+        let mut sessions = self.0.lock().map_err(|_| "session store unavailable")?;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or("analysis session not found")?;
+        if session.artifacts.is_empty() {
+            session.artifacts = generated_artifacts(generated);
+        }
+        Ok(response_for_session(session_id, session))
+    }
+}
+
+fn response_for_session(session_id: &str, session: &AnalysisSession) -> AnalysisResponse {
+    let mut representations = Vec::new();
+    if let Some(template) = &session.template {
+        representations.push(template.clone());
+    }
+    if let Some(profile) = &session.profile {
+        representations.push(profile.clone());
+    }
+    let complete = session.template.is_some() && session.profile.is_some();
+    let artifacts = session
+        .artifacts
+        .iter()
+        .map(|artifact| SessionArtifactResponse {
+            id: artifact.id.clone(),
+            name: artifact.name.clone(),
+            format: artifact.format.clone(),
+            download_url: format!("/api/sessions/{session_id}/artifacts/{}", artifact.id),
+        })
+        .collect();
+    AnalysisResponse {
+        session_id: session_id.to_owned(),
+        complete,
+        representations,
+        artifacts,
+    }
+}
+
+impl AnalysisSessionStore {
     pub(super) fn contains(&self, session_id: &str) -> bool {
         let mut sessions = match self.0.lock() {
             Ok(sessions) => sessions,
@@ -154,39 +176,17 @@ fn new_session_id() -> String {
     format!("session-{nanos:x}")
 }
 
-fn generate_minimum_artifacts(combined: &LatentRepresentation) -> Vec<SessionArtifact> {
-    let overview = format!(
-        "# Closer overview\n\nTemplate: {}\n\nCustomer situation:\n{}\n\nGoals:\n{}\n\nLikely questions:\n{}\n",
-        combined.title,
-        combined.customer.situation.join("\n- "),
-        combined.customer.goals.join("\n- "),
-        combined.questions.join("\n- "),
-    );
-    let guide = format!(
-        "# Individualized conversation guide\n\n{}\n\n## Conversation stages\n{}\n\n## Objections to explore\n{}\n",
-        combined.title,
-        combined
-            .stages
-            .iter()
-            .map(|stage| format!("### {}\n{}", stage.name, stage.questions.join("\n- ")))
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-        combined.objections.join("\n- "),
-    );
-    vec![
-        SessionArtifact {
-            id: "artifact-0".to_owned(),
-            name: "closer-overview".to_owned(),
+fn generated_artifacts(generated: GeneratedArtifactSet) -> Vec<SessionArtifact> {
+    [generated.closer_overview, generated.conversation_guide]
+        .into_iter()
+        .enumerate()
+        .map(|(index, artifact)| SessionArtifact {
+            id: format!("artifact-{index}"),
+            name: artifact.kind.name().to_owned(),
             format: "markdown".to_owned(),
-            content: overview.into_bytes(),
-        },
-        SessionArtifact {
-            id: "artifact-1".to_owned(),
-            name: "individualized-conversation-guide".to_owned(),
-            format: "markdown".to_owned(),
-            content: guide.into_bytes(),
-        },
-    ]
+            content: artifact.to_markdown().into_bytes(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -232,6 +232,15 @@ mod tests {
             .unwrap();
         assert!(complete.complete);
         assert_eq!(complete.representations.len(), 2);
+
+        let (template, profile) = store.inputs(&complete.session_id).unwrap();
+        let combined =
+            crate::combinator_agent::combine_representations(Some(&template), Some(&profile))
+                .unwrap();
+        let generated = GeneratedArtifactSet::from_combined(&combined).unwrap();
+        let complete = store
+            .store_generated(&complete.session_id, generated)
+            .unwrap();
         assert_eq!(complete.artifacts.len(), 2);
         assert!(store
             .get_artifact(&complete.session_id, "artifact-0")

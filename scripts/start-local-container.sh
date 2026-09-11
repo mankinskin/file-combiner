@@ -28,6 +28,21 @@ if ! ssh-add -l >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v gh >/dev/null 2>&1; then
+  echo "GitHub CLI is required to authenticate the local combine agent. Install gh and run: gh auth login" >&2
+  exit 1
+fi
+
+GITHUB_COPILOT_TOKEN="$(gh auth token 2>/dev/null)" || {
+  echo "No authenticated GitHub CLI account found. Run: gh auth login" >&2
+  exit 1
+}
+if [[ -z "$GITHUB_COPILOT_TOKEN" ]]; then
+  echo "GitHub CLI returned an empty token. Run: gh auth login" >&2
+  exit 1
+fi
+export GITHUB_COPILOT_TOKEN
+
 cd "$REPO_ROOT"
 export DOCKER_BUILDKIT=1
 # Docker Desktop's Windows file sharing can report a `COPY . .` layer as
@@ -43,6 +58,7 @@ docker run -d --rm \
   -p "${PORT}:8080" \
   -e COMBINE_BEARER_TOKEN=file-combiner-local-token \
   -e COMBINE_PROBE_TOKEN=file-combiner-local-probe-token \
+  -e GITHUB_COPILOT_TOKEN \
   "$IMAGE" >/dev/null
 
 for _ in $(seq 1 30); do

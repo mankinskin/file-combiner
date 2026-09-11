@@ -28,4 +28,6 @@ features = [
     "Url",
     "HtmlAnchorElement",
     "Document",
+    "Navigator",
+    "Clipboard",
 ]
