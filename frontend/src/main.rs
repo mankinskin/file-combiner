@@ -8,25 +8,26 @@ mod credential_panel;
 mod diagnostics_panel;
 mod error_panel;
 mod file_slot;
+mod markdown;
 mod models;
 mod progress_panel;
 mod representations_panel;
 mod submission;
 mod text;
+mod workflow_panel;
 
 use artifacts_panel::ArtifactsPanel;
 use browser::{clear_file_input, focus_element};
 use credential_panel::CredentialPanel;
 use diagnostics_panel::DiagnosticsPanel;
 use error_panel::RequestErrorPanel;
-use file_slot::FileSlot;
 use models::{
     Credential, CredentialMode, DiagnosticsView, LatentRepresentation, RequestState, SourceState,
     Stage, WorkbenchArtifact,
 };
 use progress_panel::ProgressPanel;
-use representations_panel::RepresentationsPanel;
 use submission::{run_submission, SubmissionSignals};
+use workflow_panel::WorkflowPanel;
 
 fn main() {
     dioxus::launch(App);
@@ -119,9 +120,10 @@ fn App() -> Element {
                         busy,
                     }
                 }
-                div { class: "sources-grid",
-                    FileSlot { label: "Conversation template", slot_id: "first-file", source: first_source }
-                    FileSlot { label: "Person information", slot_id: "second-file", source: second_source }
+                WorkflowPanel {
+                    first_source,
+                    second_source,
+                    representations: representations.read().clone(),
                 }
                 div { class: "actions-row",
                     button {
@@ -144,9 +146,6 @@ fn App() -> Element {
                 }
                 if let Some(reached) = *reached_stage.read() {
                     ProgressPanel { reached, state }
-                }
-                if !representations.read().is_empty() {
-                    RepresentationsPanel { representations: representations.read().clone() }
                 }
                 if !workbench_artifacts.read().is_empty() {
                     ArtifactsPanel { credential: credential.clone(), workbench_artifacts, copy_notice }

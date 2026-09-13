@@ -12,11 +12,16 @@ test('a successful request populates the diagnostics sidebar', async ({ page }) 
   await page.getByLabel('Access key').fill(token);
   await page.getByLabel('Conversation template').fill(templateText);
   await page.getByLabel('Person information').fill(profileText);
-  await page.getByRole('button', { name: 'Generate guide' }).click();
+  const generate = page.getByRole('button', { name: 'Generate guide' });
+  await expect(generate).toBeInViewport();
+  await expect(generate).toBeEnabled();
+  await generate.click();
 
   await expect(page.getByRole('region', { name: 'Generated artifacts' })).toBeVisible();
   const diagnosticsRegion = page.getByRole('region', { name: 'Diagnostics' });
   await expect(diagnosticsRegion).not.toContainText('No diagnostics yet');
+  await expect(diagnosticsRegion.getByText('Latent analysis completed')).toHaveCount(2);
+  await expect(diagnosticsRegion.getByText('Generation completed')).toBeVisible();
 });
 
 test('a user can paste both sources and download each generated artifact', async ({ page }) => {
@@ -26,8 +31,21 @@ test('a user can paste both sources and download each generated artifact', async
   await page.getByLabel('Person information').fill(profileText);
   await page.getByRole('button', { name: 'Generate guide' }).click();
 
-  await expect(page.getByRole('region', { name: 'Latent representations' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Workflow inputs and representations' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Template analysis' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Person analysis' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Combined latent representation' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Generated artifacts' })).toBeVisible();
+
+  const combinedBox = await page
+    .getByRole('region', { name: 'Combined latent representation' })
+    .boundingBox();
+  const artifactsBox = await page
+    .getByRole('region', { name: 'Generated artifacts' })
+    .boundingBox();
+  expect(combinedBox).not.toBeNull();
+  expect(artifactsBox).not.toBeNull();
+  expect(combinedBox!.y).toBeLessThan(artifactsBox!.y);
 
   const overview = page.getByRole('button', { name: 'Download closer-overview' });
   const guide = page.getByRole('button', {
@@ -61,7 +79,8 @@ test('a user can generate artifacts from real pitch-script fixtures', async ({ p
   await page.getByLabel('Person information').fill(pitchScriptProfileText);
   await page.getByRole('button', { name: 'Generate guide' }).click();
 
-  await expect(page.getByRole('region', { name: 'Latent representations' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Workflow inputs and representations' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Combined latent representation' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Generated artifacts' })).toBeVisible();
 
   const overview = page.getByRole('button', { name: 'Download closer-overview' });
@@ -88,9 +107,11 @@ test('a user can see intermediate analysis before final artifacts', async ({ pag
   await page.getByLabel('Person information').fill('# Profile\nGoal: improve operations');
   await page.getByRole('button', { name: 'Generate guide' }).click();
 
-  const representations = page.getByRole('region', { name: 'Latent representations' });
+  const representations = page.getByRole('region', { name: 'Workflow inputs and representations' });
   await expect(representations).toBeVisible();
   await expect(representations).toContainText('Stages');
+  await expect(page.getByRole('region', { name: 'Diagnostics' })).not.toContainText('No diagnostics yet');
+  await expect(page.getByRole('region', { name: 'Combined latent representation' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Generated artifacts' })).toBeVisible();
 });
 
@@ -107,6 +128,11 @@ test('the workbench renders each artifact in place instead of only offering a do
   const guide = page.getByLabel('individualized-conversation-guide content');
   await expect(overview).toBeVisible();
   await expect(guide).toBeVisible();
+
+  await expect(overview.getByRole('heading', { name: 'Closer overview for Closing conversation' })).toBeVisible();
+  await expect(guide.getByRole('heading', { name: 'Individualized conversation guide for Closing conversation' })).toBeVisible();
+  await expect(overview.locator('pre')).toHaveCount(0);
+  await expect(guide.locator('pre')).toHaveCount(0);
 
   // The rendered block must carry the artifact's real text, not a placeholder.
   await expect(overview).toContainText('Closer overview for');

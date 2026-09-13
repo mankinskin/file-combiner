@@ -3,8 +3,8 @@ use dioxus::prelude::*;
 use crate::api::{download_artifact, fetch_analysis_diagnostics, submit_analysis};
 use crate::browser::next_frame;
 use crate::models::{
-    ApiErrorBody, ArtifactList, Credential, DiagnosticsView, FailureDetail, LatentRepresentation,
-    RequestState, SourceState, Stage, WorkbenchArtifact,
+    ApiErrorBody, ArtifactList, Credential, DiagnosticEventView, DiagnosticsView, FailureDetail,
+    LatentRepresentation, RequestState, SourceState, Stage, WorkbenchArtifact,
 };
 
 /// Turns a raw error message plus an optional diagnostics capability into a
@@ -73,6 +73,38 @@ pub(crate) struct SubmissionSignals {
     pub(crate) copy_notice: Signal<Option<String>>,
 }
 
+fn push_live_diagnostic(
+    diagnostics: &mut Signal<Option<DiagnosticsView>>,
+    kind: &'static str,
+    message: &'static str,
+) {
+    diagnostics.with_mut(|view| {
+        let view = view.get_or_insert_with(DiagnosticsView::empty);
+        if !view.events.iter().any(|event| event.kind == kind) {
+            view.events.push(DiagnosticEventView::local(kind, message));
+        }
+    });
+}
+
+fn merge_backend_diagnostics(
+    diagnostics: &mut Signal<Option<DiagnosticsView>>,
+    backend_view: DiagnosticsView,
+) {
+    diagnostics.with_mut(|current| {
+        let current = current.get_or_insert_with(DiagnosticsView::empty);
+        current.truncated |= backend_view.truncated;
+        for event in backend_view.events {
+            if !current.events.iter().any(|existing| {
+                existing.kind == event.kind
+                    && existing.message == event.message
+                    && existing.timestamp_ms == event.timestamp_ms
+            }) {
+                current.events.push(event);
+            }
+        }
+    });
+}
+
 /// Drives the full template/profile analysis and artifact-generation flow,
 /// updating the shared signals as each stage completes.
 pub(crate) async fn run_submission(
@@ -95,6 +127,11 @@ pub(crate) async fn run_submission(
     signals.representations.set(Vec::new());
     signals.workbench_artifacts.set(Vec::new());
     signals.copy_notice.set(None);
+    push_live_diagnostic(
+        &mut signals.diagnostics,
+        "ui.workflow.access_validation.completed",
+        "Access validation completed in the browser; starting template analysis.",
+    );
 
     let (template, template_capability) =
         submit_analysis(&credential, "template", &first, None).await;
@@ -111,10 +148,20 @@ pub(crate) async fn run_submission(
     signals
         .representations
         .set(template_response.representations.clone());
+    if let Some(capability) = &template_capability {
+        if let Ok(view) = fetch_analysis_diagnostics(&credential, capability).await {
+            merge_backend_diagnostics(&mut signals.diagnostics, view);
+        }
+    }
     signals
         .state
         .set(RequestState::Submitting(Stage::AnalyzingProfile));
     signals.reached_stage.set(Some(Stage::AnalyzingProfile));
+    push_live_diagnostic(
+        &mut signals.diagnostics,
+        "ui.workflow.profile_analysis.started",
+        "Template analysis is visible; starting person-profile analysis.",
+    );
     next_frame().await;
 
     let (profile, profile_capability) = submit_analysis(
@@ -139,10 +186,15 @@ pub(crate) async fn run_submission(
         .state
         .set(RequestState::Submitting(Stage::Combining));
     signals.reached_stage.set(Some(Stage::Combining));
+    push_live_diagnostic(
+        &mut signals.diagnostics,
+        "ui.workflow.combination.started",
+        "Both source representations are available; combining latent representations.",
+    );
     next_frame().await;
     if let Some(capability) = &profile_capability {
         if let Ok(view) = fetch_analysis_diagnostics(&credential, capability).await {
-            signals.diagnostics.set(Some(view));
+            merge_backend_diagnostics(&mut signals.diagnostics, view);
         }
     }
 
@@ -164,6 +216,11 @@ pub(crate) async fn run_submission(
         .state
         .set(RequestState::Submitting(Stage::Generating));
     signals.reached_stage.set(Some(Stage::Generating));
+    push_live_diagnostic(
+        &mut signals.diagnostics,
+        "ui.workflow.generation.started",
+        "Generated artifact metadata is available; loading rendered previews.",
+    );
     signals.workbench_artifacts.set(
         response
             .artifacts
@@ -176,6 +233,11 @@ pub(crate) async fn run_submission(
     signals.state.set(RequestState::Success(ArtifactList {
         artifacts: response.artifacts.clone(),
     }));
+    push_live_diagnostic(
+        &mut signals.diagnostics,
+        "ui.workflow.generation.completed",
+        "Artifact previews finished loading in the browser.",
+    );
 
     for (index, artifact) in response.artifacts.iter().enumerate() {
         let loaded = download_artifact(&credential, &artifact.download_url)

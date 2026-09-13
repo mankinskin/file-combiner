@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 
 use crate::api::download_artifact;
 use crate::browser::{copy_to_clipboard, trigger_download};
+use crate::markdown::MarkdownView;
 use crate::models::{Credential, WorkbenchArtifact};
 
 /// Renders the generated-artifact blocks: the loaded/loading/error content
@@ -48,8 +49,12 @@ pub(crate) fn ArtifactsPanel(
                                             "Loading {name}…"
                                         }
                                     },
-                                    Some(Ok(text)) => rsx! {
-                                        pre { class: "artifact-content", "aria-label": "{name} content", "{text}" }
+                                    Some(Ok(text)) => {
+                                        if format.eq_ignore_ascii_case("markdown") {
+                                            rsx! { MarkdownView { content: text, label: format!("{name} content") } }
+                                        } else {
+                                            rsx! { pre { class: "artifact-content", "aria-label": "{name} content", "{text}" } }
+                                        }
                                     },
                                     Some(Err(reason)) => rsx! {
                                         p { class: "artifact-error", role: "alert",

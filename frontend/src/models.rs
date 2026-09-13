@@ -11,10 +11,30 @@ pub(crate) struct DiagnosticEventView {
     pub(crate) message: String,
 }
 
+impl DiagnosticEventView {
+    pub(crate) fn local(kind: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            level: "info".to_owned(),
+            timestamp_ms: 0,
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, serde::Deserialize)]
 pub(crate) struct DiagnosticsView {
     pub(crate) events: Vec<DiagnosticEventView>,
     pub(crate) truncated: bool,
+}
+
+impl DiagnosticsView {
+    pub(crate) fn empty() -> Self {
+        Self {
+            events: Vec::new(),
+            truncated: false,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Default)]
