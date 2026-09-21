@@ -1,0 +1,6 @@
+id = "e666bf85-055c-4a7a-9cad-100281b1dcde"
+created_at = "2026-09-12T13:53:23.917591600+00:00"
+title = "Port File Combiner into Skriptformator and deploy to Render"
+state = "planning"
+type = "task"
+component = "file-combiner"

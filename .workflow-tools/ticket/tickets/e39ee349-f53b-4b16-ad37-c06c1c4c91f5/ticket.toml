@@ -1,0 +1,6 @@
+id = "e39ee349-f53b-4b16-ad37-c06c1c4c91f5"
+created_at = "2026-09-09T17:47:48.332294100+00:00"
+title = "Bring file-combiner smoke script into E2E policy compliance"
+state = "planning"
+type = "task"
+component = "file-combiner"
