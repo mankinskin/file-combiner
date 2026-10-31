@@ -2,7 +2,7 @@
 
 Standalone Dioxus (frontend) and Axum (backend) application that turns an
 authenticated conversation template and person information into a
-backend-analyzed preparation-artifact set. See the [template-agent roadmap](../transcripts/05-09-2026_file-combiner-template-agent/ROADMAP.md) for the current implementation route.
+backend-analyzed preparation-artifact set. See the `../transcripts/05-09-2026_file-combiner-template-agent/ROADMAP.md` for the current implementation route.
 
 ## Quickstart
 
@@ -14,7 +14,7 @@ Primary use case: run the app locally to prepare and download the artifacts decl
 
 ## Status
 
-All four original waypoints, plus the browser UX reconciliation described in the [file-combiner UI reconciliation dossier](../transcripts/27-08-2026_app-ui-design-auth-crates/README.md), are implemented: the Cargo workspace and shared v1 contract, the authenticated `/api/combine` endpoint with bounded in-memory multipart handling, the centered Dioxus document workspace served same-origin by Axum, and the container image with GitHub Actions CI/CD to Render.
+All four original waypoints, plus the browser UX reconciliation described in the `../transcripts/27-08-2026_app-ui-design-auth-crates/README.md`, are implemented: the Cargo workspace and shared v1 contract, the authenticated `/api/combine` endpoint with bounded in-memory multipart handling, the centered Dioxus document workspace served same-origin by Axum, and the container image with GitHub Actions CI/CD to Render.
 
 ## Browser UX contract
 
